@@ -12,6 +12,7 @@
 import os, os.path, time
 import curses, locale, unicodedata
 import re, pickle, argparse, csv
+from threading import Timer
 from hashlib import md5
 from subprocess import call, Popen, STDOUT
 
@@ -48,11 +49,16 @@ class History():
     def __init__(self, hash, length):
         self.hash = hash
         self.load = lambda: loadAbs(self.pkl, pickle.load)
+        self.last = None;
     def get(self, ag):
         idx, ctx, hash = ag.index, ag.context, self.hash
         last = (self.load() or {}).get(hash, 0) - ctx
         return idx - 1 if idx else last
     def set(self, idx):
+        self.last and self.last.cancel()
+        self.last = Timer(0.2, lambda : self._set(idx))
+        self.last.start()
+    def _set(self, idx):
         hist = self.load() or {}
         hist[self.hash] = idx
         with open(self.pkl, 'w') as f:
@@ -259,6 +265,7 @@ class FadoshTUI():
                 self.opt.rate) +
                 # ファイル名に/が入っていることを考慮していないので不完全だけど
                 re.split(r"/", self.opt.file)[-1]).decode(CODE)
+        status = getMultiLine(status, w)[0]
         self.head.addstr(0, 0, " " * w)
         ratio = float(self.index) / len(self.lines)
         ratio = (self.index + (ratio * h)) / len(self.lines)# 画面の高さ考慮
