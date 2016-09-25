@@ -95,7 +95,7 @@ class SerifParser():
     # かっこ開始文字、閉じ文字、カラーID、ピッチ
     kakko = {
             None : [None , 0, -140],
-            u'「': [u'」', 2, -30],
+            u'「': [u'」', 5, -30],
             u'『': [u'』', 1, 40],
             u'【': [u'】', 3, 40],
             }
@@ -173,6 +173,7 @@ class FadoshTUI():
             curses.init_pair(i, i, -1)
         curses.init_pair(101, 255, 57)
         curses.init_pair(102, 255, 245)
+        curses.init_pair(103, 255, 53)
         curses.curs_set(False) #カーソル非表示
 
     def getCmd(self):
@@ -285,7 +286,7 @@ class FadoshTUI():
                   "~" + (" " * (lx - 3)) # 範囲外は空行\
             curernt_color = curses.A_BOLD if self.index == idx else 0
             # リフロー用に改行された文字列の切り出し
-            mline = getMultiLine(tx, lx)
+            mline = getMultiLine(tx, lx-1)
             if (y < shift): # beforeコンテキストの文字はshift分切り詰める
                 mline = mline[-shift:]
             for txt in mline:
@@ -295,9 +296,9 @@ class FadoshTUI():
         for y in range(0, ly - 1):
             txt, current = vlines[y]
             self.lline.addstr(y, 0, ' '*w)
-            col = '  ' if not current else ' |' # ゴミが残るので全行に行う
-            self.scr.addstr(y + 1, 0, col, #現在選択を示すマーカー
-                          curses.color_pair(5) | curses.A_BOLD)
+            col = 101 if current else 0 # ゴミが残るので全行に行う
+            self.scr.addstr(y + 1, 1, ' ', #現在選択を示すマーカー
+                          curses.color_pair(col))
             self.lline.move(y, 0)
             for (line, attr) in parser.parse(txt):
                 self.lline.addstr(line, curses.color_pair(attr[1]) | current)
