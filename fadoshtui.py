@@ -12,6 +12,8 @@
 import os, os.path, time
 import curses, locale, unicodedata
 import re, pickle, argparse, csv
+
+from curses import *
 from threading import Timer
 from hashlib import md5
 from subprocess import call, Popen, STDOUT
@@ -40,7 +42,7 @@ def loadAbs(filename, func):
         except IOError as e:
             return False
         except ValueError as e:
-            time.sleep(.1) # 並列アクセスでコケる時がある
+            napms(50) # 並列アクセスでコケる時がある
             count -= 1
 
 # 最後に読んでいた位置をファイルに保存する
@@ -152,7 +154,7 @@ def getMultiLine(srcLine, w):
 
 def saycommand(self, tx, pitch):
     if not tx.strip().strip("　"):
-        time.sleep(.05)
+        napms(50)
         return False # 空行を飛ばす
     say = ['say', '-o', TMP_FILE]
     if self.opt.voice:
@@ -170,36 +172,36 @@ class FadoshTUI():
         self.opt   = opt
         self.rw = ReplaceWord()
         self.counter = 0 # フレームカウンター
-        curses.wrapper(self.main)
+        wrapper(self.main)
 
     def cursesInit(self):
-        curses.use_default_colors()
-        curses.init_pair(0, -1, -1)
-        for i in range(0,255):
-            curses.init_pair(i, i, -1)
-        curses.init_pair(101, 255, 57)
-        curses.init_pair(102, 255, 245)
-        curses.init_pair(103, 255, 53)
-        curses.curs_set(False) #カーソル非表示
+        use_default_colors()
+        init_pair(0, -1, -1)
+        for i in range(16):
+            init_pair(i, i, -1)
+        init_pair(101, 57, 255)
+        init_pair(102, 245, 255)
+        init_pair(103, 255, 53)
+        curs_set(False) #カーソル非表示
 
     def getCmd(self):
-        h, w = self.scr.getmaxyx()
-        self.scr.addstr(h-1, 0, ' ' * ((self.scr.getmaxyx()[1] - 1)))
+        h, w = self.yx()
+        self.scr.addstr(h-1, 0, ' ' * (w - 1))
         self.scr.addstr(h-1, 0, ':')
 
         self.scr.nodelay(False)
-        curses.curs_set(True) #カーソル表示
-        curses.echo()
+        curs_set(True) #カーソル表示
+        echo()
 
         s = self.scr.getstr(h-1, 1)
 
-        curses.noecho()
-        curses.curs_set(False) #カーソル非表示
+        noecho()
+        curs_set(False) #カーソル非表示
         #self.scr.nodelay(True)
         return s
 
     def debugPrint(self, s):
-        self.scr.addstr(0, 0, str(s), curses.color_pair(1) | curses.A_REVERSE)
+        self.scr.addstr(0, 0, str(s), color_pair(1) | A_REVERSE)
         self.scr.nodelay(False)
         self.scr.getkey()
 
@@ -212,13 +214,13 @@ class FadoshTUI():
             while (proc and proc.poll() == None):
                 self.counter += 1
                 self.render()
-                time.sleep(1.0 / 5)
+                napms(50)
                 try:
                     c = self.scr.getkey()
                 except:
                     continue
-                if c == 'h' and self.opt.rate > 0.1: self.opt.rate -= 0.1
-                if c == 'l' and self.opt.rate < 8.9: self.opt.rate += 0.1
+                if c == 'h': self.rate(-0.1)
+                if c == 'l': self.rate(+0.1)
                 if c in " q\n":
                     proc and proc.poll() == None and proc.kill()
                     return False
@@ -238,27 +240,26 @@ class FadoshTUI():
             self.moveidx(+1)
         self.scr.nodelay(False)
 
-    def wcharSplit(self, text, offset):
-        first = ""
-        rest = ""
+    def wcharOffsetTrim(self, text, offset):
         real = 0
         wbreak = True
         for c in text.decode(CODE):
             real += min(2, len(c.encode(CODE)))
             if real == offset:
                 wbreak = False
-            if real <= offset:
-                first += c
-            else:
-                rest += c
-        if wbreak:
-            offset -= 1
-        return (first, rest, max(0, offset))
+            if real > offset:
+                return max(0, offset + ( -1 if wbreak else 0))
+        return offset
 
+    renderThread = None
     def render(self):
-        h, w = self.scr.getmaxyx()
+        self.headRender()
+        self._render()
+
+    def headRender(self):
+        h, w = self.yx()
         shift = 1 # カレント行を何行ずらして下の方で表示するか
-        status = ("{0} {1:>6}/{2:<6} {3:1.2}x :".format(
+        status = ("{} {:>6}/{:<6} {:1.2}x :".format(
                 ['/', '-', '\\', '|'][self.counter % 4],
                 self.index + 1,
                 len(self.lines),
@@ -267,61 +268,66 @@ class FadoshTUI():
                 re.split(r"/", self.opt.file)[-1]).decode(CODE)
         status = getMultiLine(status, w)[0]
         self.head.addstr(0, 0, " " * w)
+        self.head.addstr(0, 0, status)
+        # プログレスバー作成
         ratio = float(self.index) / len(self.lines)
         ratio = (self.index + (ratio * h)) / len(self.lines)# 画面の高さ考慮
-        # 比率を画面幅にマッピング
-        offset = min(int(w * ratio), w)
-        (first, rest, offset) = self.wcharSplit(status, offset)
-        self.head.addstr(0, 0, " " * offset, curses.color_pair(102))
-        self.head.addstr(0, 0, first, curses.color_pair(102))
-        self.head.addstr(0, min(offset, w), rest)
+        # プログレスバー。比率を画面幅にマッピング
+        offset = self.wcharOffsetTrim(status, min(int(w * ratio), w))
+        self.head.chgat(0, 0, offset, color_pair(102))
         self.head.refresh()
-        # 画面に描画する
+
+    def _render(self):
+        h, w = self.yx()
+        shift = 1 # カレント行を何行ずらして下の方で表示するか
+        ## 画面に描画する
         ly, lx = (h - 1, w - 2)
         try:
             self.lline.resize(ly, lx)
         except:
             ly, lx = self.lline.getmaxyx();
         vlines = []
-        parser = SerifParser()
         # リフロー用に改行された文字列の配列を作る
-        for y in range(0, ly - 1):
+        for y in range(ly - 1):
             if (len(vlines) >= ly):
                 break;
             idx = self.index + y - shift
-            tx  = self.lines[idx] if idx >= 0 and idx < len(self.lines) else\
-                  "~" + (" " * (lx - 3)) # 範囲外は空行\
-            curernt_color = curses.A_BOLD if self.index == idx else 0
+            # 範囲外はとりあえずチルダ
+            tx  = self.lines[idx] if idx >= 0 and idx < len(self.lines) else "~"
+            curernt_color = A_BOLD if self.index == idx else 0
             # リフロー用に改行された文字列の切り出し
-            mline = getMultiLine(tx, lx-1)
-            if (y < shift): # beforeコンテキストの文字はshift分切り詰める
-                mline = mline[-shift:]
-            for txt in mline:
+            # 現在行より手前はshift分切り詰めて後半を表示する
+            for txt in getMultiLine(tx, lx-1)[-shift if y < shift else 0 :]:
                 #+=だとタプルが展開されて配列要素にダイレクト挿入される
                 vlines.append((txt, curernt_color))
+        parser = SerifParser()
         # 表示用の一行を描画する
-        for y in range(0, ly - 1):
+        for y in range(ly - 1):
             txt, current = vlines[y]
-            self.lline.addstr(y, 0, ' '*w)
-            col = 101 if current else 0 # ゴミが残るので全行に行う
-            self.scr.addstr(y + 1, 1, ' ', #現在選択を示すマーカー
-                          curses.color_pair(col))
+            self.lline.addstr(y, 0, ' ' * w)
+            # ゴミが残るので全行に行う。現在選択を示すマーカー
+            self.scr.addstr(y + 1, 0, ' ',
+                            A_REVERSE |
+                            color_pair(101 if current else 15))
             self.lline.move(y, 0)
             for (line, attr) in parser.parse(txt):
-                self.lline.addstr(line, curses.color_pair(attr[1]) | current)
-
-        self.scr.refresh()
+                self.lline.addstr(line, color_pair(attr[1]) | current)
         self.lline.refresh()
 
-    # 範囲を考慮して、現在のindexから相対移動
-    # 実行直前に index = 0 をすれば絶対移動出来る
+    # テキストの範囲をに収まるようにindexを相対移動
     def moveidx(self, n):
-        self.index = max(0, min(len(self.lines) - 1,
-                                self.index + n))
+        self.index = max(0, min(len(self.lines) - 1, self.index + n))
+
     # 範囲を考慮して、n行に絶対移動
     def jumpidx(self, n):
         self.index = 0
         self.moveidx(n)
+
+    def yx(self):
+        return self.scr.getmaxyx()
+
+    def rate(self, rate):
+        self.opt.rate = max(0.1, min(8.9, self.opt.rate + rate))
 
     def mainLoop(self):
         # getIndex 以降のスコープではindexがNoneに汚染されるので先頭
@@ -337,15 +343,13 @@ class FadoshTUI():
                 self.jumpidx(int(c) -1)
             elif len(c) == 1:
                 c = c
-        if c == 'k'   or op == curses.KEY_UP:   self.moveidx(-1)
-        elif c == 'j' or op == curses.KEY_DOWN: self.moveidx(+1)
-        elif op == curses.KEY_RESIZE:
-            self.scr.clear()
-            self.scr.refresh()
-        elif c == 'K': self.moveidx(-self.scr.getmaxyx()[0]-1)
-        elif c == 'J': self.moveidx(+self.scr.getmaxyx()[0]-1)
-        elif c == 'h' and self.opt.rate > 0.1: self.opt.rate -= 0.1
-        elif c == 'l' and self.opt.rate < 8.9: self.opt.rate += 0.1
+        if c == 'k'   or op == KEY_UP:   self.moveidx(-1)
+        elif c == 'j' or op == KEY_DOWN: self.moveidx(+1)
+        elif op == KEY_RESIZE: self.scr.clear() and self.scr.refresh()
+        elif c == 'K' or op == KEY_PPAGE: self.moveidx(-self.yx()[0]-1)
+        elif c == 'J' or op == KEY_NPAGE: self.moveidx(+self.yx()[0]-1)
+        elif c == 'h' or op == KEY_LEFT:  self.rate(-0.1)
+        elif c == 'l' or op == KEY_RIGHT: self.rate(+0.1)
         elif c == 'q':
             return False
 
@@ -360,12 +364,15 @@ class FadoshTUI():
         self.cursesInit()
         self.scr = screen
         self.head  = screen.subwin(0, 0)
-        self.lline = screen.subwin(1, 2) # command line == -1
+        self.lline = screen.subpad(1, 2) # command line == -1
         self.jumpidx(self.hist.get(self.opt))
-        self.head.bkgdset(' ', curses.color_pair(101))
+        self.head.bkgdset(' ', color_pair(101) | A_REVERSE)
         self.lline.bkgdset(' ')
 
         self.render()
+
+        if self.opt.auto:
+            ungetch("\n")
 
         # キー入力に応じて動くメインループ
         while self.mainLoop():
@@ -384,6 +391,7 @@ def parseArg():
     opt('-l', '--index',   None, int,   '再開位置(ファイルのn行目)')
     opt('-c', '--context', 0,    int,   '再開位置をc行戻す')
     opt('-v', '--voice',   None, str,   'say -v option')
+    opt('-a', '--auto',   False, bool,  'auto start')
     ap.add_argument('file', type=str, help='テキストファイル')
 
     return ap.parse_args();
