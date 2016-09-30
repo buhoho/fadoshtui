@@ -181,7 +181,6 @@ class FadoshTUI():
             init_pair(i, i, -1)
         init_pair(101, 57, 255)
         init_pair(102, 245, 255)
-        init_pair(103, 255, 53)
         curs_set(False) #カーソル非表示
 
     def getCmd(self):
@@ -208,19 +207,20 @@ class FadoshTUI():
     # 読み上げとその間の処理を停止するループ。一部のキー入力を受け付ける
     # 読み上げ停止でFalseを返す
     def sayWaitLoop(self, line):
-        parser = SerifParser()
-        for tx, attr in parser.parse(line):
+        sp = SerifParser()
+        for tx, attr in sp.parse(line):
+            self._render()
             proc = saycommand(self, tx, attr[2])
             while (proc and proc.poll() == None):
                 self.counter += 1
-                self.render()
-                napms(50)
+                self.headRender()
+                napms(200)
                 try:
                     c = self.scr.getkey()
                 except:
                     continue
-                if c == 'h': self.rate(-0.1)
-                if c == 'l': self.rate(+0.1)
+                #if c == 'h': self.rate(-0.1)
+                #if c == 'l': self.rate(+0.1)
                 if c in " q\n":
                     proc and proc.poll() == None and proc.kill()
                     return False
@@ -251,7 +251,6 @@ class FadoshTUI():
                 return max(0, offset + ( -1 if wbreak else 0))
         return offset
 
-    renderThread = None
     def render(self):
         self.headRender()
         self._render()
@@ -279,7 +278,7 @@ class FadoshTUI():
 
     def _render(self):
         h, w = self.yx()
-        shift = 1 # カレント行を何行ずらして下の方で表示するか
+        shift = 2 # カレント行を何行ずらして下の方で表示するか
         ## 画面に描画する
         ly, lx = (h - 1, w - 2)
         try:
@@ -288,33 +287,39 @@ class FadoshTUI():
             ly, lx = self.lline.getmaxyx();
         vlines = []
         # リフロー用に改行された文字列の配列を作る
-        for y in range(ly - 1):
-            if (len(vlines) >= ly):
-                break;
-            idx = self.index + y - shift
+        currIdx=0
+        for y in range(-5, ly): # n 行手前の文からパーズする
+            idx = self.index + y
             # 範囲外はとりあえずチルダ
             tx  = self.lines[idx] if idx >= 0 and idx < len(self.lines) else "~"
             curernt_color = A_BOLD if self.index == idx else 0
             # リフロー用に改行された文字列の切り出し
             # 現在行より手前はshift分切り詰めて後半を表示する
-            for txt in getMultiLine(tx, lx-1)[-shift if y < shift else 0 :]:
+            for txt in getMultiLine(tx, lx-1):
                 #+=だとタプルが展開されて配列要素にダイレクト挿入される
                 vlines.append((txt, curernt_color))
-        parser = SerifParser()
+                if not currIdx and curernt_color:
+                    currIdx = len(vlines) - 1
+        sp = SerifParser()
+        for y in range(currIdx - shift):
+            # 画面内だけを処理してもシンタックスが崩れて 正常に表示できないので
+            # 画面外の文も事前にパースする
+            sp.parse(vlines[y][0])
+        vlines = vlines[currIdx - shift:]
+        #self.debugPrint(len(vlines))
         # 表示用の一行を描画する
         for y in range(ly - 1):
             txt, current = vlines[y]
             self.lline.addstr(y, 0, ' ' * w)
             # ゴミが残るので全行に行う。現在選択を示すマーカー
             self.scr.addstr(y + 1, 0, ' ',
-                            A_REVERSE |
-                            color_pair(101 if current else 15))
+                            (A_REVERSE|color_pair(101) if current else 0))
             self.lline.move(y, 0)
-            for (line, attr) in parser.parse(txt):
+            for (line, attr) in sp.parse(txt):
                 self.lline.addstr(line, color_pair(attr[1]) | current)
         self.lline.refresh()
 
-    # テキストの範囲をに収まるようにindexを相対移動
+    # テキストの範囲に収まるようindexを相対移動
     def moveidx(self, n):
         self.index = max(0, min(len(self.lines) - 1, self.index + n))
 
@@ -345,11 +350,11 @@ class FadoshTUI():
                 c = c
         if c == 'k'   or op == KEY_UP:   self.moveidx(-1)
         elif c == 'j' or op == KEY_DOWN: self.moveidx(+1)
-        elif op == KEY_RESIZE: self.scr.clear() and self.scr.refresh()
         elif c == 'K' or op == KEY_PPAGE: self.moveidx(-self.yx()[0]-1)
         elif c == 'J' or op == KEY_NPAGE: self.moveidx(+self.yx()[0]-1)
         elif c == 'h' or op == KEY_LEFT:  self.rate(-0.1)
         elif c == 'l' or op == KEY_RIGHT: self.rate(+0.1)
+        elif op == KEY_RESIZE: self.scr.clear() and self.scr.refresh()
         elif c == 'q':
             return False
 
