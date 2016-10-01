@@ -23,8 +23,11 @@ CODE = locale.getpreferredencoding()
 TMP_FILE ='/tmp/fadoshtui.cache.aiff' # format指定してもwavにすると動かない
 DEVNULL  = open(os.devnull, 'w')
 CONF = os.environ['HOME'] + '/.fadosh'
-
-
+HAS_PLAY = True
+try:
+    call(['play', '--help'], stdout=DEVNULL, stderr=STDOUT)
+except:
+    HAS_PLAY = False
 
 
 def createConfig():
@@ -156,14 +159,19 @@ def saycommand(self, tx, pitch):
     if not tx.strip().strip("　"):
         napms(50)
         return False # 空行を飛ばす
-    say = ['say', '-o', TMP_FILE]
+
+    say = ['say', self.rw.replace(tx)]
     if self.opt.voice:
         say += ['-v',  self.opt.voice]
-    say += self.rw.replace(tx)
-    call(say) # これが終わらないと読めないので同期処理
-    return Popen(['play',
-                  '-q', TMP_FILE, 'tempo', '-s', str(self.opt.rate),
-                  'pitch', str(pitch)], stdout=DEVNULL, stderr=STDOUT);
+
+    cmd = ['play', '-q', TMP_FILE, 'tempo', '-s', str(self.opt.rate),
+            'pitch', str(pitch)
+            ] if HAS_PLAY else say # sox 未インストール sayを素で実行
+
+    if HAS_PLAY:
+        call(say + ['-o', TMP_FILE]) # これが終わらないと読めないので同期処理
+
+    return Popen(cmd, stdout=DEVNULL, stderr=STDOUT);
 
 class FadoshTUI():
     def __init__(self, opt):
@@ -257,7 +265,6 @@ class FadoshTUI():
 
     def headRender(self):
         h, w = self.yx()
-        shift = 1 # カレント行を何行ずらして下の方で表示するか
         status = ("{} {:>6}/{:<6} {:1.2}x :".format(
                 ['/', '-', '\\', '|'][self.counter % 4],
                 self.index + 1,
