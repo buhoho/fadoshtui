@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 # Copyright © https://reddit.com/u/buhoho
 #
-# require OSX
+# require macOS
 # require sox (sound of exchange command)
 #
-# fadoshtui is Mac OSX say command front ui.
+# fadoshtui is macOS say command front ui.
 # say コマンドで作成した音声をsoxを使って速度変更などの調整しながら再生する
 # ついでに最後に聞いていた場所(行数)をhistoryに保存したりしたりもする
 
@@ -155,21 +155,14 @@ def getMultiLine(srcLine, w):
     return lines
 
 def saycommand(self, tx, pitch):
-    if not tx.strip().strip("　"):
-        napms(50)
-        return False # 空行を飛ばす
-
     say = ['say', self.rw.replace(tx)]
     if self.opt.voice:
         say += ['-v',  self.opt.voice]
-
     cmd = ['play', '-q', TMP_FILE, 'tempo', '-s', str(self.opt.rate),
             'pitch', str(pitch)
             ] if HAS_PLAY else say # sox 未インストール sayを素で実行
-
     if HAS_PLAY:
         call(say + ['-o', TMP_FILE]) # これが終わらないと読めないので同期処理
-
     return Popen(cmd, stdout=DEVNULL, stderr=STDOUT);
 
 class FadoshTUI():
@@ -179,7 +172,6 @@ class FadoshTUI():
         self.opt   = opt
         self.rw = ReplaceWord()
         self.counter = 0 # フレームカウンター
-        wrapper(self.main)
 
     def cursesInit(self):
         use_default_colors()
@@ -231,6 +223,7 @@ class FadoshTUI():
                 if c in " q\n":
                     proc and proc.poll() == None and proc.kill()
                     return False
+        napms(30)
         return True
 
     # 読み上げが終わったら次の行を読む。そんなループ
@@ -378,7 +371,7 @@ class FadoshTUI():
         self.cursesInit()
         self.scr = screen
         self.head  = screen.subwin(0, 0)
-        self.lline = screen.subpad(1, 2) # command line == -1
+        self.lline = screen.subwin(1, 2) # command line == -1
         self.jumpidx(self.hist.get(self.opt))
         self.head.bkgdset(' ', color_pair(101) | A_REVERSE)
         self.lline.bkgdset(' ')
@@ -396,21 +389,22 @@ class FadoshTUI():
 
 def parseArg():
     ap = argparse.ArgumentParser(description=u"""
-        fadoshtui is Mac OSX say command front ui.
+        fadoshtui is macOS say command front ui.
         """)
     def opt(o, name, d, t, h):
         ap.add_argument(o, name, const=True, nargs='?', choices=None,
                                  default=d,  type=t,    help=h)
     opt('-r', '--rate',    1.0,  float, 'speaking speed')
     opt('-l', '--index',   None, int,   'start line index')
-    opt('-c', '--context', 2,    int,   'current line margin top')
+    opt('-c', '--context', 1,    int,   'current line margin top')
     opt('-v', '--voice',   None, str,   'say -v option')
-    opt('-a', '--auto',   False, bool,  'auto start and file end auto quit')
-    ap.add_argument('file', type=str, help='テキストファイル')
+    opt('-a', '--auto',    False,bool,  'auto start and file end auto quit')
+    ap.add_argument('file', type=str, help='text file')
 
     return ap.parse_args();
 
 if __name__ == "__main__":
     locale.setlocale(locale.LC_ALL, '')
     createConfig()
-    FadoshTUI(parseArg());
+    fadosh = FadoshTUI(parseArg());
+    wrapper(fadosh.main)
