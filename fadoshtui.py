@@ -56,9 +56,8 @@ class History():
         self.load = lambda: loadAbs(self.pkl, pickle.load)
         self.last = None;
     def get(self, ag):
-        idx, ctx, hash = ag.index, ag.context, self.hash
-        last = (self.load() or {}).get(hash, 0) - ctx
-        return idx - 1 if idx else last
+        last = (self.load() or {}).get(self.hash, 0)
+        return ag.index - 1 if ag.index else last
     def set(self, idx):
         self.last and self.last.cancel()
         self.last = Timer(0.2, lambda : self._set(idx))
@@ -285,23 +284,23 @@ class FadoshTUI():
 
     def _render(self):
         h, w = self.yx()
-        shift = 2 # カレント行を何行ずらして下の方で表示するか
         ## 画面に描画する
         ly, lx = (h - 1, w - 2)
         try:
             self.lline.resize(ly, lx)
         except:
             ly, lx = self.lline.getmaxyx();
+        # 現在行の表示位置をずらす。画面に限定する
+        shift = max(0, min(ly/2, self.opt.context))
         vlines = []
         # リフロー用に改行された文字列の配列を作る
         currIdx=0
-        for y in range(-5, ly): # n 行手前の文からパーズする
+        for y in range((10 + shift) * -1, ly): # n 行手前の文からパーズする
             idx = self.index + y
             # 範囲外はとりあえずチルダ
             tx  = self.lines[idx] if idx >= 0 and idx < len(self.lines) else "~"
             curernt_color = A_BOLD if self.index == idx else 0
             # リフロー用に改行された文字列の切り出し
-            # 現在行より手前はshift分切り詰めて後半を表示する
             for txt in getMultiLine(tx, lx-1):
                 #+=だとタプルが展開されて配列要素にダイレクト挿入される
                 vlines.append((txt, curernt_color))
@@ -310,7 +309,7 @@ class FadoshTUI():
         sp = SerifParser()
         for y in range(currIdx - shift):
             # 画面内だけを処理してもシンタックスが崩れて 正常に表示できないので
-            # 画面外の文も事前にパースする
+            # 画面外の文も遡ってパーズする
             sp.parse(vlines[y][0])
         vlines = vlines[currIdx - shift:]
         #self.debugPrint(len(vlines))
@@ -370,6 +369,9 @@ class FadoshTUI():
         if c and c in " \n":
             self.playLoop();
 
+        if self.opt.auto and self.index ==len(self.lines) -1:
+            return False
+
         return True #ループ継続
 
     def main(self, screen):
@@ -399,11 +401,11 @@ def parseArg():
     def opt(o, name, d, t, h):
         ap.add_argument(o, name, const=True, nargs='?', choices=None,
                                  default=d,  type=t,    help=h)
-    opt('-r', '--rate',    1.0,  float, '読み上げ速度。')
-    opt('-l', '--index',   None, int,   '再開位置(ファイルのn行目)')
-    opt('-c', '--context', 0,    int,   '再開位置をc行戻す')
+    opt('-r', '--rate',    1.0,  float, 'speaking speed')
+    opt('-l', '--index',   None, int,   'start line index')
+    opt('-c', '--context', 2,    int,   'current line margin top')
     opt('-v', '--voice',   None, str,   'say -v option')
-    opt('-a', '--auto',   False, bool,  'auto start')
+    opt('-a', '--auto',   False, bool,  'auto start and file end auto quit')
     ap.add_argument('file', type=str, help='テキストファイル')
 
     return ap.parse_args();
