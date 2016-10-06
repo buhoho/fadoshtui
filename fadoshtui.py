@@ -167,6 +167,7 @@ def saycommand(self, tx, pitch):
 
 class FadoshTUI():
     def __init__(self, opt):
+        self.st = '.'
         self.lines = loadLines(opt.file);
         self.hist  = History(f2md5(opt.file), len(self.lines))
         self.opt   = opt
@@ -212,14 +213,14 @@ class FadoshTUI():
             proc = saycommand(self, tx, attr[2])
             while (proc and proc.poll() == None):
                 self.counter += 1
-                self.headRender()
-                napms(200)
+                self.stLineRender()
+                napms(1000 / 60)
                 try:
                     c = self.scr.getkey()
                 except:
                     continue
-                #if c == 'h': self.rate(-0.1)
-                #if c == 'l': self.rate(+0.1)
+                if c == 'h': self.rate(-0.1)
+                if c == 'l': self.rate(+0.1)
                 if c in " q\n":
                     proc and proc.poll() == None and proc.kill()
                     return False
@@ -228,6 +229,7 @@ class FadoshTUI():
 
     # 読み上げが終わったら次の行を読む。そんなループ
     def playLoop(self):
+        self.st = '>'
         self.scr.nodelay(True)
         while self.index < len(self.lines) and\
               type(self.lines[self.index]) == str:
@@ -239,6 +241,7 @@ class FadoshTUI():
                 break
             self.moveidx(+1)
         self.scr.nodelay(False)
+        self.st = '.'
 
     def wcharOffsetTrim(self, text, offset):
         real = 0
@@ -252,28 +255,29 @@ class FadoshTUI():
         return offset
 
     def render(self):
-        self.headRender()
+        self.stLineRender()
         self._render()
 
-    def headRender(self):
+    def stLineRender(self):
         h, w = self.yx()
-        status = ("{} {:>6}/{:<6} {:1.2}x :".format(
-                ['/', '-', '\\', '|'][self.counter % 4],
+        status = (" {} {:>5} / {:<5} - ({:1.2}x) :".format(
+                self.st,
                 self.index + 1,
                 len(self.lines),
                 self.opt.rate) +
                 # ファイル名に/が入っていることを考慮していないので不完全だけど
                 re.split(r"/", self.opt.file)[-1]).decode(CODE)
         status = getMultiLine(status, w)[0]
-        self.head.addstr(0, 0, " " * w)
-        self.head.addstr(0, 0, status)
+        self.stLine.mvderwin(h-2, 0)
+        self.stLine.addstr(0, 0, " " * w)
+        self.stLine.addstr(0, 0, status)
         # プログレスバー作成
         ratio = float(self.index) / len(self.lines)
         ratio = (self.index + (ratio * h)) / len(self.lines)# 画面の高さ考慮
         # プログレスバー。比率を画面幅にマッピング
         offset = self.wcharOffsetTrim(status, min(int(w * ratio), w))
-        self.head.chgat(0, 0, offset, color_pair(102))
-        self.head.refresh()
+        self.stLine.chgat(0, 0, offset, color_pair(102))
+        self.stLine.refresh()
 
     def _render(self):
         h, w = self.yx()
@@ -294,7 +298,7 @@ class FadoshTUI():
             tx  = self.lines[idx] if idx >= 0 and idx < len(self.lines) else "~"
             curernt_color = A_BOLD if self.index == idx else 0
             # リフロー用に改行された文字列の切り出し
-            for txt in getMultiLine(tx, lx-1):
+            for txt in getMultiLine(tx, lx):
                 #+=だとタプルが展開されて配列要素にダイレクト挿入される
                 vlines.append((txt, curernt_color))
                 if not currIdx and curernt_color:
@@ -309,9 +313,9 @@ class FadoshTUI():
         # 表示用の一行を描画する
         for y in range(ly - 1):
             txt, current = vlines[y]
-            self.lline.addstr(y, 0, ' ' * w)
+            self.lline.addstr(y, 0, ' ' * (w -2))
             # ゴミが残るので全行に行う。現在選択を示すマーカー
-            self.scr.addstr(y + 1, 0, ' ',
+            self.scr.addstr(y, 0, ' ',
                             (A_REVERSE|color_pair(101) if current else 0))
             self.lline.move(y, 0)
             for (line, attr) in sp.parse(txt):
@@ -362,6 +366,8 @@ class FadoshTUI():
         if c and c in " \n":
             self.playLoop();
 
+        self.stLineRender()
+
         if self.opt.auto and self.index ==len(self.lines) -1:
             return False
 
@@ -370,10 +376,11 @@ class FadoshTUI():
     def main(self, screen):
         self.cursesInit()
         self.scr = screen
-        self.head  = screen.subwin(0, 0)
-        self.lline = screen.subwin(1, 2) # command line == -1
+        h, w = self.yx()
+        self.lline = screen.subwin(0, 2) # command line == -1
+        self.stLine  = screen.subwin(h-2, 0)
         self.jumpidx(self.hist.get(self.opt))
-        self.head.bkgdset(' ', color_pair(101) | A_REVERSE)
+        self.stLine.bkgdset(' ', color_pair(101) | A_REVERSE)
         self.lline.bkgdset(' ')
 
         self.render()
