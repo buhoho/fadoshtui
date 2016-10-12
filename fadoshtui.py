@@ -22,7 +22,8 @@ locale.setlocale(locale.LC_ALL, '')
 CODE = locale.getpreferredencoding()
 TMP_FILE ='/tmp/fadoshtui.cache.aiff' # format指定してもwavにすると動かない
 DEVNULL  = open(os.devnull, 'w')
-CONF = os.environ['HOME'] + '/.fadosh'
+
+CONF = os.environ['HOME'] + '/.config/fadosh'
 HAS_PLAY = True
 try:
     call(['play', '--help'], stdout=DEVNULL, stderr=STDOUT)
@@ -30,7 +31,10 @@ except:
     HAS_PLAY = False
 
 
+
 def createConfig():
+    if not os.path.isdir(os.environ['HOME'] + '/.config'):
+        os.mkdir(os.environ['HOME'] + '/.config')
     if not os.path.isdir(CONF):
         os.mkdir(CONF)
 
@@ -172,7 +176,6 @@ class FadoshTUI():
         self.hist  = History(f2md5(opt.file), len(self.lines))
         self.opt   = opt
         self.rw = ReplaceWord()
-        self.counter = 0 # フレームカウンター
 
     def cursesInit(self):
         use_default_colors()
@@ -212,9 +215,8 @@ class FadoshTUI():
             self._render()
             proc = saycommand(self, tx, attr[2])
             while (proc and proc.poll() == None):
-                self.counter += 1
-                self.stLineRender()
-                napms(1000 / 60)
+                self.render()
+                napms(1000 / 28)
                 try:
                     c = self.scr.getkey()
                 except:
@@ -224,7 +226,7 @@ class FadoshTUI():
                 if c in " q\n":
                     proc and proc.poll() == None and proc.kill()
                     return False
-        napms(30)
+        napms(20)
         return True
 
     # 読み上げが終わったら次の行を読む。そんなループ
@@ -259,16 +261,29 @@ class FadoshTUI():
         self._render()
 
     def stLineRender(self):
-        h, w = self.yx()
-        status = (" {} {:>5} / {:<5} - ({:1.2}x) :".format(
+        count = 10
+        while count > 0:
+            try:
+                self._stLineRender() #リサイズ時にエラーが出るので
+                break
+            except:
+                count -= 1
+
+    def _stLineRender(self):
+        status = (" {} {:>5} / {:<5} ({:1.2}x) :".format(
                 self.st,
                 self.index + 1,
                 len(self.lines),
                 self.opt.rate) +
                 # ファイル名に/が入っていることを考慮していないので不完全だけど
                 re.split(r"/", self.opt.file)[-1]).decode(CODE)
+        h, w = self.yx()
+        try:
+            self.lline.resize(0, w)
+            self.stLine.mvwin(h-2, 0)
+        except:
+            ly, lx = self.lline.getmaxyx();
         status = getMultiLine(status, w)[0]
-        self.stLine.mvderwin(h-2, 0)
         self.stLine.addstr(0, 0, " " * w)
         self.stLine.addstr(0, 0, status)
         # プログレスバー作成
@@ -357,7 +372,8 @@ class FadoshTUI():
         elif c == 'J' or op == KEY_NPAGE: self.moveidx(+self.yx()[0]-1)
         elif c == 'h' or op == KEY_LEFT:  self.rate(-0.1)
         elif c == 'l' or op == KEY_RIGHT: self.rate(+0.1)
-        elif op == KEY_RESIZE: self.scr.clear() and self.scr.refresh()
+        elif op == KEY_RESIZE:
+            self.scr.clear() and self.scr.refresh()
         elif c == 'q':
             return False
 
@@ -378,7 +394,7 @@ class FadoshTUI():
         self.scr = screen
         h, w = self.yx()
         self.lline = screen.subwin(0, 2) # command line == -1
-        self.stLine  = screen.subwin(h-2, 0)
+        self.stLine = screen.subwin(h-2, 0)
         self.jumpidx(self.hist.get(self.opt))
         self.stLine.bkgdset(' ', color_pair(101) | A_REVERSE)
         self.lline.bkgdset(' ')
