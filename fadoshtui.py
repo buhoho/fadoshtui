@@ -184,6 +184,7 @@ class FadoshTUI():
             init_pair(i, i, -1)
         init_pair(101, 57, 255)
         init_pair(102, 245, 255)
+        init_pair(120, 198, -1)
         curs_set(False) #カーソル非表示
 
     def getCmd(self):
@@ -207,15 +208,17 @@ class FadoshTUI():
         self.scr.nodelay(False)
         self.scr.getkey()
 
-    # 読み上げとその間の処理を停止するループ。一部のキー入力を受け付ける
-    # 読み上げ停止でFalseを返す
     def sayWaitLoop(self, line):
+        """
+        読み上げとその間の処理を停止するループ。一部のキー入力を受け付ける
+        読み上げ停止でFalseを返す
+        """
         sp = SerifParser()
         for tx, attr in sp.parse(line):
             self._render()
             proc = saycommand(self, tx, attr[2])
+            self.render()
             while (proc and proc.poll() == None):
-                self.render()
                 napms(1000 / 28)
                 try:
                     c = self.scr.getkey()
@@ -226,11 +229,12 @@ class FadoshTUI():
                 if c in " q\n":
                     proc and proc.poll() == None and proc.kill()
                     return False
+                self.stLineRender()
         napms(20)
         return True
 
-    # 読み上げが終わったら次の行を読む。そんなループ
     def playLoop(self):
+        """ 読み上げが終わったら次の行を読む。そんなループ """
         self.st = '>'
         self.scr.nodelay(True)
         while self.index < len(self.lines) and\
@@ -261,45 +265,41 @@ class FadoshTUI():
         self._render()
 
     def stLineRender(self):
-        count = 10
-        while count > 0:
-            try:
-                self._stLineRender() #リサイズ時にエラーが出るので
-                break
-            except:
-                count -= 1
+        status = (" {} {:>5} / {:<5} ({:1.2}x) ".format(
+                    self.st,
+                    self.index + 1,
+                    len(self.lines),
+                    self.opt.rate) +
+                    # ToDo:ファイル名に/が入っていることを考慮していない
+                    re.split(r"/", self.opt.file)[-1]
+                ).decode(CODE)
 
-    def _stLineRender(self):
-        status = (" {} {:>5} / {:<5} ({:1.2}x) :".format(
-                self.st,
-                self.index + 1,
-                len(self.lines),
-                self.opt.rate) +
-                # ファイル名に/が入っていることを考慮していないので不完全だけど
-                re.split(r"/", self.opt.file)[-1]).decode(CODE)
         h, w = self.yx()
         try:
-            self.lline.resize(0, w)
-            self.stLine.mvwin(h-2, 0)
+            self.stline.resize(1, w)
+            self.stline.addstr(0, 0, ' ' * w)
+            self.scr.addstr(h-1, 0, ' ' * w) # cmdline(scr)をrefresh
         except:
-            ly, lx = self.lline.getmaxyx();
-        status = getMultiLine(status, w)[0]
-        self.stLine.addstr(0, 0, " " * w)
-        self.stLine.addstr(0, 0, status)
+            w = self.stline.getmaxyx()[1];
+
+        self.stline.mvwin(h-2, 0)
+        status = getMultiLine(status, w-2)[0]
+        self.stline.addstr(0, 0, status)
         # プログレスバー作成
         ratio = float(self.index) / len(self.lines)
         ratio = (self.index + (ratio * h)) / len(self.lines)# 画面の高さ考慮
         # プログレスバー。比率を画面幅にマッピング
         offset = self.wcharOffsetTrim(status, min(int(w * ratio), w))
-        self.stLine.chgat(0, 0, offset, color_pair(102))
-        self.stLine.refresh()
+        self.stline.chgat(0, 0, offset, color_pair(102))
+        self.stline.refresh()
 
     def _render(self):
+        """ 画面に描画する """
         h, w = self.yx()
-        ## 画面に描画する
         ly, lx = (h - 1, w - 2)
         try:
             self.lline.resize(ly, lx)
+            self.scr.addstr(h-1, 0, ' ' * w) # cmdline(scr)をrefresh
         except:
             ly, lx = self.lline.getmaxyx();
         # 現在行の表示位置をずらす。画面に限定する
@@ -328,7 +328,7 @@ class FadoshTUI():
         # 表示用の一行を描画する
         for y in range(ly - 1):
             txt, current = vlines[y]
-            self.lline.addstr(y, 0, ' ' * (w -2))
+            self.lline.addstr(y, 0, ' ' * lx)
             # ゴミが残るので全行に行う。現在選択を示すマーカー
             self.scr.addstr(y, 0, ' ',
                             (A_REVERSE|color_pair(101) if current else 0))
@@ -350,10 +350,9 @@ class FadoshTUI():
         return self.scr.getmaxyx()
 
     def rate(self, rate):
-        self.opt.rate = max(0.1, min(8.9, self.opt.rate + rate))
+        self.opt.rate = max(0.1, min(9.0, self.opt.rate + rate))
 
     def mainLoop(self):
-        # getIndex 以降のスコープではindexがNoneに汚染されるので先頭
         self.hist.set(self.index)
         op = self.scr.getch()
         try:
@@ -373,16 +372,16 @@ class FadoshTUI():
         elif c == 'h' or op == KEY_LEFT:  self.rate(-0.1)
         elif c == 'l' or op == KEY_RIGHT: self.rate(+0.1)
         elif op == KEY_RESIZE:
-            self.scr.clear() and self.scr.refresh()
+            self.scr.clear()
+            self.scr.refresh()
         elif c == 'q':
             return False
 
-        self.render()
+        self._render()
 
         if c and c in " \n":
             self.playLoop();
 
-        self.stLineRender()
 
         if self.opt.auto and self.index ==len(self.lines) -1:
             return False
@@ -392,13 +391,14 @@ class FadoshTUI():
     def main(self, screen):
         self.cursesInit()
         self.scr = screen
-        h, w = self.yx()
-        self.lline = screen.subwin(0, 2) # command line == -1
-        self.stLine = screen.subwin(h-2, 0)
-        self.jumpidx(self.hist.get(self.opt))
-        self.stLine.bkgdset(' ', color_pair(101) | A_REVERSE)
-        self.lline.bkgdset(' ')
 
+        h, w = self.yx()
+
+        self.lline = screen.subwin(0, 2)
+        self.stline = screen.subwin(h-2, 0)
+        self.stline.bkgdset(' ', color_pair(101) | A_REVERSE)
+
+        self.jumpidx(self.hist.get(self.opt))
         self.render()
 
         if self.opt.auto:
