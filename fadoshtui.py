@@ -377,7 +377,7 @@ class FadoshTUI():
         elif c == 'q':
             return False
 
-        self._render()
+        self.render()
 
         if c and c in " \n":
             self.playLoop();
