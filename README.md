@@ -11,7 +11,7 @@ sayコマンドは音声読み上げコマンドです。FadoshTUI はセリフ�
 
 ## Demo
 
-![FadoshTUI on terminal movie](http://i.imgur.com/erC3yrX.gif)
+![FadoshTUI on terminal movie](http://i.imgur.com/b9f7a8y.gif)
 
 
 ## Features
@@ -31,7 +31,7 @@ sayコマンドは音声読み上げコマンドです。FadoshTUI はセリフ�
 ```sh
 brew install sox         # rate and pitch support require
 play -nq synth 1 exp 231 # sound check
-curl 'https://raw.github.com/buhoho/fadoshtui/main/fadoshtui.py' > ~/bin/fadosh
+curl 'https://raw.githubusercontent.com/buhoho/fadoshtui/master/fadoshtui.py' > ~/bin/fadosh
 chmod u+x ~/bin/fadosh
 fadosh your-file.txt
 ```
@@ -70,17 +70,18 @@ This file from is **from first column word replace to second column word**.
 It word is useing regex format on python.
 
 一列目が変換対象の文字、二列目が変換後の文字。  
-また、変換対象はpythonの正規表現が使えます。
+また、pythonの正規表現が使えます。
 
 Example1:
 
 ```sh
-curl 'https://raw.github.com/buhoho/fadoshtui/master/replace.tsv' > ~/.fadosh/replace.tsv
+curl 'https://raw.githubusercontent.com/buhoho/fadoshtui/master/replace.tsv' > ~/.config/fadosh/replace.tsv
 open ~/.fadosh/replace.tsv
 ```
 
 Example2:
 
 ```sh
-echo "禁書目録\tインデックス" > ~/.fadosh/replace.tsv
+touch ~/.config/fadosh/replace.tsv
+echo "禁書目録\tインデックス" >> ~/.config/fadosh/replace.tsv
 ```
