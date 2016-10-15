@@ -76,7 +76,7 @@ Example1:
 
 ```sh
 curl 'https://raw.githubusercontent.com/buhoho/fadoshtui/master/replace.tsv' > ~/.config/fadosh/replace.tsv
-open ~/.fadosh/replace.tsv
+open ~/.config/fadosh/replace.tsv
 ```
 
 Example2:
