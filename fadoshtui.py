@@ -313,7 +313,7 @@ class FadoshTUI():
             tx  = self.lines[idx] if idx >= 0 and idx < len(self.lines) else "~"
             curernt_color = A_BOLD if self.index == idx else 0
             # リフロー用に改行された文字列の切り出し
-            for txt in getMultiLine(tx, lx):
+            for txt in getMultiLine(tx, lx -1):
                 #+=だとタプルが展開されて配列要素にダイレクト挿入される
                 vlines.append((txt, curernt_color))
                 if not currIdx and curernt_color:
