@@ -9,7 +9,7 @@
 # say コマンドで作成した音声をsoxを使って速度変更などの調整しながら再生する
 # ついでに最後に聞いていた場所(行数)をhistoryに保存したりしたりもする
 
-import os, os.path, time
+import os, os.path, time, sys
 import curses, locale, unicodedata
 import re, pickle, argparse, csv
 
@@ -17,6 +17,9 @@ from curses import *
 from threading import Timer
 from hashlib import md5
 from subprocess import call, Popen, STDOUT
+
+reload(sys)
+sys.setdefaultencoding("UTF-8") # 暫定的
 
 locale.setlocale(locale.LC_ALL, '')
 CODE = locale.getpreferredencoding()
@@ -427,7 +430,6 @@ def parseArg():
     return ap.parse_args();
 
 if __name__ == "__main__":
-    locale.setlocale(locale.LC_ALL, '')
     createConfig()
     fadosh = FadoshTUI(parseArg());
     wrapper(fadosh.main)
