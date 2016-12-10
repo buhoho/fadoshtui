@@ -7,10 +7,9 @@
 #
 # fadoshtui is macOS say command front ui.
 # say コマンドで作成した音声をsoxを使って速度変更などの調整しながら再生する
-# ついでに最後に聞いていた場所(行数)をhistoryに保存したりしたりもする
 
 import os, os.path, time, sys
-import curses, locale, unicodedata
+import locale, unicodedata
 import re, pickle, argparse, csv
 
 from curses import *
@@ -22,11 +21,10 @@ reload(sys)
 sys.setdefaultencoding("UTF-8") # 暫定的
 
 locale.setlocale(locale.LC_ALL, '')
-CODE = locale.getpreferredencoding()
-TMP_FILE ='/tmp/fadoshtui.cache.aiff' # format指定してもwavにすると動かない
+CODE     = locale.getpreferredencoding()
+TMP_FILE = '/tmp/fadoshtui.cache.aiff' # format指定してもwavにすると動かない
 DEVNULL  = open(os.devnull, 'w')
-
-CONF = os.environ['HOME'] + '/.config/fadosh'
+CONF     = os.environ['HOME'] + '/.config/fadosh'
 HAS_PLAY = True
 try:
     call(['play', '--help'], stdout=DEVNULL, stderr=STDOUT)
@@ -216,22 +214,37 @@ class FadoshTUI():
         読み上げとその間の処理を停止するループ。一部のキー入力を受け付ける
         読み上げ停止でFalseを返す
         """
+        #ToDo:
+        #renderと同じように一定の文脈を遡って現在の行のシンタックスをパースしないと行けない
+        #多分両方で共通の処理をするのでゴリッと書き換える必要がある
         sp = SerifParser()
         for tx, attr in sp.parse(line):
             self._render()
             proc = saycommand(self, tx, attr[2])
             self.render()
             while (proc and proc.poll() == None):
-                napms(1000 / 28)
+
+                op = self.scr.getch()
                 try:
-                    c = self.scr.getkey()
+                    c = chr(op)
                 except:
-                    continue
-                if c == 'h': self.rate(-0.1)
-                if c == 'l': self.rate(+0.1)
-                if c in " q\n":
+                    c = None
+
+                if c == 'h' or op == KEY_LEFT:
+                    self.rate(-0.1)
+
+                if c == 'l' or op == KEY_RIGHT:
+                    self.rate(+0.1)
+
+                if op == KEY_RESIZE:
+                    self.scr.clear()
+                    self.scr.refresh()
+                    self.render()
+
+                if c and c in " q\n": # 終了
                     proc and proc.poll() == None and proc.kill()
                     return False
+
                 self.stLineRender()
         napms(20)
         return True
@@ -296,21 +309,13 @@ class FadoshTUI():
         self.stline.chgat(0, 0, offset, color_pair(102))
         self.stline.refresh()
 
-    def _render(self):
-        """ 画面に描画する """
-        h, w = self.yx()
-        ly, lx = (h - 1, w - 2)
-        try:
-            self.lline.resize(ly, lx)
-            self.scr.addstr(h-1, 0, ' ' * w) # cmdline(scr)をrefresh
-        except:
-            ly, lx = self.lline.getmaxyx();
+    def refreshVline(self, ly, lx, sPerser):
         # 現在行の表示位置をずらす。画面に限定する
         shift = max(0, min(ly/2, self.opt.context))
-        vlines = []
+        self.vlines = []
+        currIdx=0 # 事前パースの範囲指定のために記憶
         # リフロー用に改行された文字列の配列を作る
-        currIdx=0
-        for y in range((10 + shift) * -1, ly): # n 行手前の文からパーズする
+        for y in range(ly * -2 , ly): # n 行手前の文からパーズする
             idx = self.index + y
             # 範囲外はとりあえずチルダ
             tx  = self.lines[idx] if idx >= 0 and idx < len(self.lines) else "~"
@@ -318,19 +323,35 @@ class FadoshTUI():
             # リフロー用に改行された文字列の切り出し
             for txt in getMultiLine(tx, lx -1):
                 #+=だとタプルが展開されて配列要素にダイレクト挿入される
-                vlines.append((txt, curernt_color))
+                self.vlines.append((txt, curernt_color))
                 if not currIdx and curernt_color:
-                    currIdx = len(vlines) - 1
-        sp = SerifParser()
+                    currIdx = len(self.vlines) - 1
         for y in range(currIdx - shift):
             # 画面内だけを処理してもシンタックスが崩れて 正常に表示できないので
             # 画面外の文も遡ってパーズする
-            sp.parse(vlines[y][0])
-        vlines = vlines[currIdx - shift:]
+            sPerser.parse(self.vlines[y][0])
+
+        self.vlines = self.vlines[currIdx - shift:]
+
+    def _render(self):
+        """
+        画面に描画する
+        """
+        h, w = self.yx()
+        ly, lx = (h - 1, w - 2)
+
+        try:
+            self.lline.resize(ly, lx)
+            self.scr.addstr(h-1, 0, ' ' * w) # cmdline(scr)をrefresh
+        except:
+            ly, lx = self.lline.getmaxyx();
+
+        sp = SerifParser()
+        self.refreshVline(ly, lx, sp)
         #self.debugPrint(len(vlines))
         # 表示用の一行を描画する
         for y in range(ly - 1):
-            txt, current = vlines[y]
+            txt, current = self.vlines[y]
             self.lline.addstr(y, 0, ' ' * lx)
             # ゴミが残るので全行に行う。現在選択を示すマーカー
             self.scr.addstr(y, 0, ' ',
@@ -358,18 +379,21 @@ class FadoshTUI():
     def mainLoop(self):
         self.hist.set(self.index)
         op = self.scr.getch()
+
         try:
             c = chr(op)
         except:
             c = None
+
         if c == ':':
             c = self.getCmd()
             if c.isdigit():
                 self.jumpidx(int(c) -1)
             elif len(c) == 1:
                 c = c
-        if c == 'k'   or op == KEY_UP:   self.moveidx(-1)
-        elif c == 'j' or op == KEY_DOWN: self.moveidx(+1)
+
+        if c == 'k'   or op == KEY_UP:    self.moveidx(-1)
+        elif c == 'j' or op == KEY_DOWN:  self.moveidx(+1)
         elif c == 'K' or op == KEY_PPAGE: self.moveidx(-self.yx()[0]-1)
         elif c == 'J' or op == KEY_NPAGE: self.moveidx(+self.yx()[0]-1)
         elif c == 'h' or op == KEY_LEFT:  self.rate(-0.1)
@@ -384,7 +408,7 @@ class FadoshTUI():
 
         if c and c in " \n":
             self.playLoop();
-
+            self.stLineRender()
 
         if self.opt.auto and self.index ==len(self.lines) -1:
             return False
@@ -431,5 +455,4 @@ def parseArg():
 
 if __name__ == "__main__":
     createConfig()
-    fadosh = FadoshTUI(parseArg());
-    wrapper(fadosh.main)
+    wrapper(FadoshTUI(parseArg()).main)
