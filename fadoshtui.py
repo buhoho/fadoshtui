@@ -11,6 +11,7 @@
 import os, os.path, time, sys
 import locale, unicodedata
 import re, pickle, argparse, csv
+import copy
 
 from curses import *
 from threading import Timer
@@ -106,14 +107,26 @@ def loadLines(filename):
     lines.append("")
     return lines
 
+
+class Serif():
+    def __init__(self, close, color, pitch):
+        self.close = close
+        self.color = color
+        self.pitch = pitch
+    def txt(self, txt):
+        my = copy.copy(self)
+        my.txt = txt
+        return my
+
 class SerifParser():
     # かっこ開始文字、閉じ文字、カラーID、ピッチ
     kakko = {
-            None : [None , 0, -140],
-            u'「': [u'」', 5, -30],
-            u'『': [u'』', 1, 40],
-            u'【': [u'】', 3, 40],
+            None : Serif(None,  0, -140), 
+            u'「': Serif(u'」', 5, -30),
+            u'『': Serif(u'』', 1, 40),
+            u'【': Serif(u'】', 3, 40) 
             }
+
     def __init__(self):
         # デフォルト色、ピッチ。状態が残るとマズイのでコンストラクタで初期化
         self.stack = [self.kakko[None]]
@@ -122,18 +135,18 @@ class SerifParser():
         strStack = ''
         for c in line.decode(CODE):
             strStack += c
-            if self.stack[-1][0] == c: #閉じかっこ
-                lines.append([strStack, self.stack[-1]])
+            if self.stack[-1].close == c: #閉じかっこ
+                lines += [self.stack[-1].txt(strStack)]
                 self.stack.pop()
                 strStack = ''
             if c in self.kakko.keys(): #開始かっこ
                 strStack = strStack[:-1]
                 if strStack != '':
-                    lines.append([strStack, self.stack[-1]])
+                    lines += [self.stack[-1].txt(strStack)]
                 strStack = c
                 self.stack.append(self.kakko[c])
         if strStack:
-            lines.append([strStack, self.stack[-1]])
+            lines += [self.stack[-1].txt(strStack)]
         return lines
 
 # 改行して配列で返す
@@ -209,19 +222,13 @@ class FadoshTUI():
         self.scr.nodelay(False)
         self.scr.getkey()
 
-    def sayWaitLoop(self, line):
+    def sayWaitLoop(self):
         """
         読み上げとその間の処理を停止するループ。一部のキー入力を受け付ける
         読み上げ停止でFalseを返す
         """
-        #ToDo:
-        #renderと同じように一定の文脈を遡って現在の行のシンタックスをパースしないと行けない
-        #多分両方で共通の処理をするのでゴリッと書き換える必要がある
-        sp = SerifParser()
-        for tx, attr in sp.parse(line):
-            self._render()
-            proc = saycommand(self, tx, attr[2])
-            self.render()
+        for se in self.playSerifParse():
+            proc = saycommand(self, se.txt, se.pitch)
             while (proc and proc.poll() == None):
 
                 op = self.scr.getch()
@@ -246,7 +253,9 @@ class FadoshTUI():
                     return False
 
                 self.stLineRender()
+
         napms(20)
+
         return True
 
     def playLoop(self):
@@ -255,11 +264,13 @@ class FadoshTUI():
         self.scr.nodelay(True)
         while self.index < len(self.lines) and\
               type(self.lines[self.index]) == str:
+
             self.hist.set(self.index)
             self.render()
-            if not self.sayWaitLoop(self.lines[self.index]):
+
+            if not self.sayWaitLoop():
                 break
-            if self.index == len(self.lines) -1:
+            if self.index >= len(self.lines) -1:
                 break
             self.moveidx(+1)
         self.scr.nodelay(False)
@@ -281,6 +292,9 @@ class FadoshTUI():
         self._render()
 
     def stLineRender(self):
+        """
+        ステータスラインを描画する
+        """
         status = (" {} {:>5} / {:<5} ({:1.2}x) ".format(
                     self.st,
                     self.index + 1,
@@ -309,33 +323,46 @@ class FadoshTUI():
         self.stline.chgat(0, 0, offset, color_pair(102))
         self.stline.refresh()
 
-    def refreshVline(self, ly, lx, sPerser):
-        # 現在行の表示位置をずらす。画面に限定する
-        shift = max(0, min(ly/2, self.opt.context))
-        self.vlines = []
-        currIdx=0 # 事前パースの範囲指定のために記憶
-        # リフロー用に改行された文字列の配列を作る
-        for y in range(ly * -2 , ly): # n 行手前の文からパーズする
-            idx = self.index + y
-            # 範囲外はとりあえずチルダ
-            tx  = self.lines[idx] if idx >= 0 and idx < len(self.lines) else "~"
-            curernt_color = A_BOLD if self.index == idx else 0
-            # リフロー用に改行された文字列の切り出し
-            for txt in getMultiLine(tx, lx -1):
-                #+=だとタプルが展開されて配列要素にダイレクト挿入される
-                self.vlines.append((txt, curernt_color))
-                if not currIdx and curernt_color:
-                    currIdx = len(self.vlines) - 1
-        for y in range(currIdx - shift):
-            # 画面内だけを処理してもシンタックスが崩れて 正常に表示できないので
-            # 画面外の文も遡ってパーズする
-            sPerser.parse(self.vlines[y][0])
+    def playSerifParse(self):
+        """
+        カレント行の手前の文章もパースして読み上げ位置のセリフ状態を正確に
+        判定する。改行されたセリフを想定した処理
+        """
+        sPerser = SerifParser();
+        before = 20
+        se = None;
+        for idx in range(max(0, (self.index - before)), self.index + 1):
+            se = sPerser.parse(self.lines[idx])
+        return se
 
-        self.vlines = self.vlines[currIdx - shift:]
+    def refreshBuf(self, ly, lx):
+        """
+        描画バッファを更新
+        """
+        shift = max(0, min(ly/2, self.opt.context)) # 行が画面内に入るように
+        renderBuf = []
+        sPerser = SerifParser();
+        currIdx = 0
+
+        for y in range((lx + shift) * -1, ly):
+            idx = self.index + y
+            # テキスト範囲外ならチルダ
+            tx = self.lines[idx] if idx >= 0 and idx < len(self.lines) else "~"
+
+            current_color = A_BOLD if self.index == idx else 0
+
+            for txt in getMultiLine(tx, lx -1):
+                se = sPerser.parse(txt)
+                #+=だとタプルが展開されて配列要素にダイレクト挿入される
+                renderBuf.append((se, current_color))
+                if currIdx == 0 and current_color:
+                    currIdx = len(renderBuf) - 1
+
+        return renderBuf[currIdx - shift:]
 
     def _render(self):
         """
-        画面に描画する
+        スクリーンに描画する
         """
         h, w = self.yx()
         ly, lx = (h - 1, w - 2)
@@ -346,19 +373,21 @@ class FadoshTUI():
         except:
             ly, lx = self.lline.getmaxyx();
 
-        sp = SerifParser()
-        self.refreshVline(ly, lx, sp)
-        #self.debugPrint(len(vlines))
+        buf = self.refreshBuf(ly, lx)
+
+        #self.debugPrint(len(renderBuf))
         # 表示用の一行を描画する
         for y in range(ly - 1):
-            txt, current = self.vlines[y]
+            se, current = buf[y]
             self.lline.addstr(y, 0, ' ' * lx)
             # ゴミが残るので全行に行う。現在選択を示すマーカー
             self.scr.addstr(y, 0, ' ',
                             (A_REVERSE|color_pair(101) if current else 0))
             self.lline.move(y, 0)
-            for (line, attr) in sp.parse(txt):
-                self.lline.addstr(line, color_pair(attr[1]) | current)
+
+            for seri in se:
+                self.lline.addstr(seri.txt, color_pair(seri.color) | current)
+
         self.lline.refresh()
 
     # テキストの範囲に収まるようindexを相対移動
