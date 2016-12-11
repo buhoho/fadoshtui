@@ -11,12 +11,12 @@
 import os, os.path, time, sys
 import locale, unicodedata
 import re, pickle, argparse, csv
-import copy
 
 from curses import *
 from threading import Timer
 from hashlib import md5
 from subprocess import call, Popen, STDOUT
+from copy import copy
 
 reload(sys)
 sys.setdefaultencoding("UTF-8") # 暫定的
@@ -114,7 +114,7 @@ class Serif():
         self.color = color
         self.pitch = pitch
     def txt(self, txt):
-        my = copy.copy(self)
+        my = copy(self)
         my.txt = txt
         return my
 
@@ -131,11 +131,12 @@ class SerifParser():
         # デフォルト色、ピッチ。状態が残るとマズイのでコンストラクタで初期化
         self.stack = [self.kakko[None]]
     def parse(self, line):
+        """ Serifのリスト """
         lines = []
         strStack = ''
         for c in line.decode(CODE):
             strStack += c
-            if self.stack[-1].close == c: #閉じかっこ
+            if self.stack[-1].close == c:
                 lines += [self.stack[-1].txt(strStack)]
                 self.stack.pop()
                 strStack = ''
@@ -254,7 +255,9 @@ class FadoshTUI():
 
                 self.stLineRender()
 
-        napms(20)
+                napms(80)
+
+        napms(80)
 
         return True
 
@@ -329,7 +332,7 @@ class FadoshTUI():
         判定する。改行されたセリフを想定した処理
         """
         sPerser = SerifParser();
-        before = 20
+        before = 8 
         se = None;
         for idx in range(max(0, (self.index - before)), self.index + 1):
             se = sPerser.parse(self.lines[idx])
@@ -341,10 +344,11 @@ class FadoshTUI():
         """
         shift = max(0, min(ly/2, self.opt.context)) # 行が画面内に入るように
         renderBuf = []
+        before = 8 
         sPerser = SerifParser();
         currIdx = 0
 
-        for y in range((lx + shift) * -1, ly):
+        for y in range((shift + before) * -1, ly):
             idx = self.index + y
             # テキスト範囲外ならチルダ
             tx = self.lines[idx] if idx >= 0 and idx < len(self.lines) else "~"
