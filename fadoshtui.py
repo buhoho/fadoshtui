@@ -107,6 +107,8 @@ def loadLines(filename):
     lines.append("")
     return lines
 
+def play(filename):
+    Popen(["play", CONF + '/' + filename], stdout=DEVNULL, stderr=STDOUT);
 
 class Serif():
     def __init__(self, close, color, pitch):
@@ -226,7 +228,7 @@ class FadoshTUI():
     def sayWaitLoop(self):
         """
         読み上げとその間の処理を停止するループ。一部のキー入力を受け付ける
-        読み上げ停止でFalseを返す
+        読み上げ継続ならTrue、停止ならFalseを返す
         """
         for se in self.playSerifParse():
             proc = saycommand(self, se.txt, se.pitch)
@@ -240,24 +242,27 @@ class FadoshTUI():
 
                 if c == 'h' or op == KEY_LEFT:
                     self.rate(-0.1)
-
                 if c == 'l' or op == KEY_RIGHT:
                     self.rate(+0.1)
-
                 if op == KEY_RESIZE:
                     self.scr.clear()
                     self.scr.refresh()
                     self.render()
-
-                if c and c in " q\n": # 終了
+                if c and c in "[] q\n":
                     proc and proc.poll() == None and proc.kill()
-                    return False
+                    if c == '[':
+                        i = self.index -1
+                        while self.lines[i].strip() == "":
+                                i -= 1
+                        self.jumpidx(i-1)
+                        return True
+                    if c == ']':
+                        return True # 再生は続けたまま現在の読み上げキャンセル
+                    if c and c in " q\n": # 終了
+                        return False
 
                 self.stLineRender()
-
-                napms(80)
-
-        napms(80)
+                napms(40)
 
         return True
 
@@ -271,12 +276,15 @@ class FadoshTUI():
             self.hist.set(self.index)
             self.render()
 
+            napms(60)
+
             if not self.sayWaitLoop():
                 break
             if self.index >= len(self.lines) -1:
                 break
             self.moveidx(+1)
         self.scr.nodelay(False)
+        play('close.wav')
         self.st = '.'
 
     def wcharOffsetTrim(self, text, offset):
@@ -379,7 +387,6 @@ class FadoshTUI():
 
         buf = self.refreshBuf(ly, lx)
 
-        #self.debugPrint(len(renderBuf))
         # 表示用の一行を描画する
         for y in range(ly - 1):
             se, current = buf[y]
