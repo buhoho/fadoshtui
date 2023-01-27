@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # Copyright © https://reddit.com/u/buhoho
 #
@@ -8,29 +8,29 @@
 # fadoshtui is macOS say command front ui.
 # say コマンドで作成した音声をsoxを使って速度変更などの調整しながら再生する
 
-import os, os.path, time, sys
+import os, os.path, time, sys, importlib
 import locale, unicodedata
 import re, pickle, argparse, csv
 
 from curses import *
 from threading import Timer
 from hashlib import md5
-from subprocess import call, Popen, STDOUT
+from subprocess import call, Popen, STDOUT, PIPE
 from copy import copy
 
-reload(sys)
-sys.setdefaultencoding("UTF-8") # 暫定的
+importlib.reload(sys)
+# sys.setdefaultencoding("UTF-8") # 暫定的
 
 locale.setlocale(locale.LC_ALL, '')
 CODE     = locale.getpreferredencoding()
 TMP_FILE = '/tmp/fadoshtui.cache.aiff' # format指定してもwavにすると動かない
 DEVNULL  = open(os.devnull, 'w')
 CONF     = os.environ['HOME'] + '/.config/fadosh'
-HAS_PLAY = True
 try:
     call(['play', '--help'], stdout=DEVNULL, stderr=STDOUT)
 except:
-    HAS_PLAY = False
+    sys.stderr.write("Error: not have play command(sox player) this enviroment\n.")
+    exit(1)
 
 
 
@@ -42,11 +42,11 @@ def createConfig():
 
 #ファイルをロードする。コールバック無いと動かない
 #ない場合、ロード失敗でFalseを返す
-def loadAbs(filename, func):
+def loadAbs(filename, flg, func):
     count = 4
     while count:
         try:
-            with open(filename, 'r') as f:
+            with open(filename, flg) as f:
                  return func(f)
         except IOError as e:
             return False
@@ -59,7 +59,8 @@ class History():
     pkl = CONF + '/history.pkl'
     def __init__(self, hash, length):
         self.hash = hash
-        self.load = lambda: loadAbs(self.pkl, pickle.load)
+        # pickle に引き渡すファイルはリードバイナリじゃないと駄目らしい
+        self.load = lambda: loadAbs(self.pkl, 'rb', pickle.load)
         self.last = None;
     def get(self, ag):
         last = (self.load() or {}).get(self.hash, 0)
@@ -71,7 +72,7 @@ class History():
     def _set(self, idx):
         hist = self.load() or {}
         hist[self.hash] = idx
-        with open(self.pkl, 'w') as f:
+        with open(self.pkl, 'wb') as f:
              pickle.dump(hist, f)
         return idx
 
@@ -79,20 +80,19 @@ class History():
 # 置換の適用はファイルの上から順番に行う
 class ReplaceWord():
     def __init__(self):
-        self.words = loadAbs(CONF + '/replace.tsv', (lambda f:
-            [[re.compile(n.decode(CODE)), m]
+        self.words = loadAbs(CONF + '/replace.tsv', 'r', (lambda f:
+            [[re.compile(n), m]
                 for (n, m) in csv.reader(f, delimiter='\t')])) or []
         # say をクラッシュさせる文字列
-        self.words += [[re.compile("[ -]".decode(CODE)), ""],
-                       [re.compile("-+".decode(CODE)), ""],
-                       [re.compile("ー。".decode(CODE)), "ー"],
-                       [re.compile("ー([？?！!」])".decode(CODE)), "\1"]] 
+        self.words += [[re.compile("[ -]"), ""],
+                       [re.compile("-+"), ""],
+                       [re.compile("ー。"), "ー"],
+                       [re.compile("ー([？?！!」])"), "\1"]] 
     # 読み替え置換
     def replace(self, txt):
-        txt = txt.decode(CODE)
         for (ptn, replace) in self.words or []:
             txt = ptn.sub(replace, txt)
-        return txt.decode(CODE)
+        return txt
 
 def f2md5(filename):
     hasher = md5()
@@ -102,7 +102,7 @@ def f2md5(filename):
 
 def loadLines(filename):
     lines = []
-    for t in open(filename):
+    for t in open(filename, encoding="UTF-8"):
         lines.append(t.strip("\n"));
     lines.append("")
     return lines
@@ -136,7 +136,7 @@ class SerifParser():
         """ Serifのリスト """
         lines = []
         strStack = ''
-        for c in line.decode(CODE):
+        for c in line:
             strStack += c
             if self.stack[-1].close == c:
                 lines += [self.stack[-1].txt(strStack)]
@@ -163,7 +163,7 @@ def getMultiLine(srcLine, w):
     oneLine = ""
     n = 0
     # ユニコードにしないとバイトずつの操作になる。。
-    for c in srcLine.decode(CODE):
+    for c in srcLine:
         n += min(2, len(c.encode(CODE)))
         if n < w:
             oneLine += c
@@ -179,11 +179,10 @@ def saycommand(self, tx, pitch):
     say = ['say', self.rw.replace(tx)]
     if self.opt.voice:
         say += ['-v',  self.opt.voice]
-    cmd = ['play', '-q', TMP_FILE, 'tempo', '-s', str(self.opt.rate),
-            'pitch', str(pitch)
-            ] if HAS_PLAY else say # sox 未インストール sayを素で実行
-    if HAS_PLAY:
-        call(say + ['-o', TMP_FILE]) # これが終わらないと読めないので同期処理
+    cmd = ['play', '-q', TMP_FILE, 'tempo', '-s', str(self.opt.rate), 'pitch', str(pitch)]
+
+    call(say + ['-o', TMP_FILE]) # これが終わらないと読めないので同期処理
+
     return Popen(cmd, stdout=DEVNULL, stderr=STDOUT);
 
 class FadoshTUI():
@@ -290,7 +289,7 @@ class FadoshTUI():
     def wcharOffsetTrim(self, text, offset):
         real = 0
         wbreak = True
-        for c in text.decode(CODE):
+        for c in text:
             real += min(2, len(c.encode(CODE)))
             if real == offset:
                 wbreak = False
@@ -313,7 +312,7 @@ class FadoshTUI():
                     self.opt.rate) +
                     # ToDo:ファイル名に/が入っていることを考慮していない
                     re.split(r"/", self.opt.file)[-1]
-                ).decode(CODE)
+                )
 
         h, w = self.yx()
         try:
@@ -340,7 +339,7 @@ class FadoshTUI():
         判定する。改行されたセリフを想定した処理
         """
         sPerser = SerifParser();
-        before = 8 
+        before = 5 
         se = None;
         for idx in range(max(0, (self.index - before)), self.index + 1):
             se = sPerser.parse(self.lines[idx])
