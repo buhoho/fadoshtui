@@ -24,7 +24,7 @@ sayコマンドは音声読み上げコマンドです。FadoshTUI はセリフ�
 
 - macOS
 - sox is installed. (use play command.)
-- python version 2.7 (i.e. default version in macOS)
+- python3 (i.e. default version in macOS)
 
 ## Install & Usage
 
@@ -37,21 +37,17 @@ fadosh your-file.txt
 ```
 
 
-## Key bind.
+## Key bindings
 
-Key bindings are vim like.
+The key bindings in this TextUI app are similar to those in Vim.
 
-Quit: q key.
-
-Say (Speaking): Return or Space key.
-
-Scroll: j,k or ↓, ↑
-
-Page move: J,K or page up, page down key.
-
-Jump index: push `:` key, and target index number. and Enter.
-
-Speak speed: h,l
+* To quit the app, press `q`.
+* To speak the text, press `Return` or `Space`.
+* To scroll through the text, use `j`, `k`, `↓`, or `↑`.
+* To move through pages, use `J`, `K`, `page up`, or `page down`.
+* To jump to a specific index, press `:` and enter the target index number followed by `Enter`.
+* To adjust the speak speed, use `h` or `l`.
+* To skip to the previous or next sentence during speech, press `[` or `]`.
 
 
 ## Optional files.
