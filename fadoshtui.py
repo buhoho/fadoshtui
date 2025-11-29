@@ -34,9 +34,9 @@ except:
     sys.stderr.write("Error: not have play command(sox player) this enviroment\n.")
     exit(1)
 
-COLOR_PRIMARY    = 101
-COLOR_PRIMARY2   = 102
-COLOR_SECONDARY  = 103
+COLOR_PRIMARY    = 105
+COLOR_PRIMARY2   = 106
+COLOR_SECONDARY  = 107
 COLOR_DEFAULT    = 100
 COLOR_DEFAULT_HI = 101
 COLOR_SERIF1     = 110
@@ -361,17 +361,17 @@ class FadoshTUI():
         init_pair(0, -1, -1)
         for i in range(16):
             init_pair(i, i, -1)
-        init_pair(COLOR_PRIMARY,    236, 33)
-        init_pair(COLOR_PRIMARY2,   33,  -1)
+        init_pair(COLOR_PRIMARY, 236, 33)
+        init_pair(COLOR_PRIMARY2,   33, -1)
         init_pair(COLOR_SECONDARY,  235, 248)
-        init_pair(COLOR_DEFAULT,    -1,  -1)
-        init_pair(COLOR_DEFAULT_HI, -1,  236)
-        init_pair(COLOR_SERIF1,     39,  -1)
-        init_pair(COLOR_SERIF1_HI,  39,  236)
+        init_pair(COLOR_DEFAULT,    -1, -1)
+        init_pair(COLOR_DEFAULT_HI, -1, 236)
+        init_pair(COLOR_SERIF1,     39, -1)
+        init_pair(COLOR_SERIF1_HI,  39, 236)
         init_pair(COLOR_SERIF2,     123, -1)
         init_pair(COLOR_SERIF2_HI,  123, 236)
-        init_pair(COLOR_KAKKO1,     5,   -1)
-        init_pair(COLOR_KAKKO1_HI,  5,   236)
+        init_pair(COLOR_KAKKO1,     5, -1)
+        init_pair(COLOR_KAKKO1_HI,  5, 236)
         # init_pair(120, 198, -1)
         curs_set(False) #カーソル非表示
 
@@ -561,11 +561,16 @@ class FadoshTUI():
         # 表示用の一行を描画する
         for y in range(ly - 1):
             se, current = buf[y]
-            self.lline.addstr(y, 0, ' ' * lx)
+            # 行全体を背景色でクリア（scrに対して行うのでパディング部分も塗れる）
+            try:
+                self.scr.addstr(y, 0, ' ' * w, color_pair(COLOR_DEFAULT))
+            except curses.error:
+                pass # 画面端のリサイズ直後などで死なないように
             self.lline.move(y, 0)
 
             for seri in se:
                 if current:
+                    self.scr.addstr(y, 0, ' ' * w, color_pair(seri.color_hi))
                     self.lline.addstr(seri.txt, color_pair(seri.color_hi) | current)
                 else:
                     self.lline.addstr(seri.txt, color_pair(seri.color))
