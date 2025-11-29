@@ -9,11 +9,11 @@
 # say コマンドで作成した音声をsoxを使って速度変更などの調整しながら再生する
 
 import os, os.path, time, sys, importlib
+import shutil, threading
 import locale, unicodedata
-import re, pickle, argparse, csv
+import re, pickle, argparse, csv, tempfile
 
 from curses import *
-from threading import Timer
 from hashlib import md5
 from subprocess import call, Popen, STDOUT, PIPE
 from copy import copy
@@ -22,16 +22,29 @@ importlib.reload(sys)
 # sys.setdefaultencoding("UTF-8") # 暫定的
 
 locale.setlocale(locale.LC_ALL, '')
-CODE     = locale.getpreferredencoding()
-TMP_FILE = '/tmp/fadoshtui.cache.aiff' # format指定してもwavにすると動かない
-DEVNULL  = open(os.devnull, 'w')
-CONF     = os.environ['HOME'] + '/.config/fadosh'
+CODE    = locale.getpreferredencoding()
+CONF    = os.environ['HOME'] + '/.config/fadosh'
+try:
+    from subprocess import DEVNULL
+except ImportError:
+    DEVNULL = open(os.devnull, 'wb')
 try:
     call(['play', '--help'], stdout=DEVNULL, stderr=STDOUT)
 except:
     sys.stderr.write("Error: not have play command(sox player) this enviroment\n.")
     exit(1)
 
+COLOR_PRIMARY    = 101
+COLOR_PRIMARY2   = 102
+COLOR_SECONDARY  = 103
+COLOR_DEFAULT    = 100
+COLOR_DEFAULT_HI = 101
+COLOR_SERIF1     = 110
+COLOR_SERIF1_HI  = 111
+COLOR_SERIF2     = 112
+COLOR_SERIF2_HI  = 113
+COLOR_KAKKO1     = 114
+COLOR_KAKKO1_HI  = 115
 
 
 def createConfig():
@@ -67,7 +80,7 @@ class History():
         return ag.index - 1 if ag.index else last
     def set(self, idx):
         self.last and self.last.cancel()
-        self.last = Timer(0.2, lambda : self._set(idx))
+        self.last = threading.Timer(0.2, lambda : self._set(idx))
         self.last.start()
     def _set(self, idx):
         hist = self.load() or {}
@@ -111,9 +124,10 @@ def play(filename):
     Popen(["play", CONF + '/' + filename], stdout=DEVNULL, stderr=STDOUT);
 
 class Serif():
-    def __init__(self, close, color, pitch):
+    def __init__(self, close, color, color_hi, pitch):
         self.close = close
         self.color = color
+        self.color_hi = color_hi
         self.pitch = pitch
     def txt(self, txt):
         my = copy(self)
@@ -123,10 +137,10 @@ class Serif():
 class SerifParser():
     # かっこ開始文字、閉じ文字、カラーID、ピッチ
     kakko = {
-            None : Serif(None,  0, -140), 
-            u'「': Serif(u'」', 5, -30),
-            u'『': Serif(u'』', 1, 40),
-            u'【': Serif(u'】', 3, 40) 
+            None : Serif(None,  COLOR_DEFAULT,COLOR_DEFAULT_HI, -140), 
+            u'「': Serif(u'」', COLOR_SERIF1, COLOR_SERIF1_HI,   -30),
+            u'『': Serif(u'』', COLOR_SERIF2, COLOR_SERIF2_HI,   40),
+            u'【': Serif(u'】', COLOR_KAKKO1, COLOR_KAKKO1_HI,   40) 
             }
 
     def __init__(self):
@@ -152,6 +166,152 @@ class SerifParser():
             lines += [self.stack[-1].txt(strStack)]
         return lines
 
+
+class AudioCacheManager:
+    def __init__(self, output_dir, voice_opt, rw_instance):
+        self.cache_dir = os.path.join(output_dir, 'cache')
+        self.voice = voice_opt
+        self.rw = rw_instance
+        self.current_index = 0
+        self.lines = []
+        self.running = True
+
+        # 排他制御用: { md5_hash: threading.Event }
+        # 「今、誰かがこのハッシュを作っているか」を管理する
+        self.processing_events = {}
+        self.lock = threading.Lock() 
+        
+        if os.path.exists(self.cache_dir):
+            shutil.rmtree(self.cache_dir)
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+        self.thread = threading.Thread(target=self._worker, daemon=True)
+        self.thread.start()
+
+    def set_context(self, index, lines):
+        self.current_index = index
+        self.lines = lines
+
+    def get_audio_path_sync(self, text):
+        """
+        メインスレッド用インターフェース
+        生成処理は内部で完結させ、競合時は待機させる
+        """
+        if not text: return None
+        
+        md5_hash = md5(text.encode('utf-8')).hexdigest()
+        filepath = os.path.join(self.cache_dir, md5_hash + '.aiff') # format指定してもwavにすると動かない
+
+        # 1. 既にファイルがある (Fast Path)
+        if os.path.exists(filepath):
+            return filepath
+
+        # 2. 無い場合、作成権限を確認 (排他制御)
+        event = None
+        owner = False
+
+        with self.lock:
+            if md5_hash in self.processing_events:
+                # 誰かが作成中 -> 待機チケット(Event)を受け取る
+                event = self.processing_events[md5_hash]
+            else:
+                # 誰も作っていない -> 自分が作成担当になる
+                event = threading.Event()
+                self.processing_events[md5_hash] = event
+                owner = True
+
+        if not owner:
+            # 作成中なら、完了するまでここでブロックして待つ
+            event.wait()
+            return filepath
+
+        # 3. 自分が担当者の場合のみ、生成処理を実行
+        try:
+            self._generate_file(text, filepath)
+        finally:
+            # 完了通知
+            event.set()
+            # 登録解除
+            with self.lock:
+                if md5_hash in self.processing_events:
+                    del self.processing_events[md5_hash]
+        
+        return filepath
+
+    def _generate_file(self, text, filepath):
+        """ ファイル生成の実体（Manager内部でのみ使用） """
+        part_path = filepath + '.part' 
+        speak_text = self.rw.replace(text)
+        
+        cmd = ['say', speak_text, '-o', part_path]
+        if self.voice:
+            cmd += ['-v', self.voice]
+            
+        ret = call(cmd, stdout=DEVNULL, stderr=STDOUT)
+        
+        if ret == 0:
+            os.rename(part_path, filepath)
+        else:
+            if os.path.exists(part_path): os.remove(part_path)
+
+    def _worker(self):
+        """ バックグラウンド先読みスレッド """
+        LOOK_BACK = 5
+        LOOK_AHEAD = 5
+        
+        while self.running:
+            if not self.lines:
+                time.sleep(0.5)
+                continue
+
+            curr = self.current_index
+            start_idx = max(0, curr - LOOK_BACK)
+            end_idx = min(len(self.lines), curr + LOOK_AHEAD)
+            
+            from fadoshtui import SerifParser 
+            parser = SerifParser()
+
+            for idx in range(start_idx, end_idx):
+                if idx >= len(self.lines): break
+                
+                line = self.lines[idx]
+                if type(line) != str: continue
+                
+                serif_list = parser.parse(line)
+                
+                # ★修正: idx > curr を idx >= curr に変更
+                # これで「現在行」も生成対象になり、再生中の行の「次のパーツ」が裏で作られます
+                if idx >= curr:
+                    for serif in serif_list:
+                        md5_hash = md5(serif.txt.encode('utf-8')).hexdigest()
+                        filepath = os.path.join(self.cache_dir, md5_hash + '.aiff')
+                        
+                        # ファイルがなく、かつ作成中でもない時だけ予約を入れる
+                        should_generate = False
+                        with self.lock:
+                            if not os.path.exists(filepath) and md5_hash not in self.processing_events:
+                                self.processing_events[md5_hash] = threading.Event()
+                                should_generate = True
+                        
+                        if should_generate:
+                            try:
+                                self._generate_file(serif.txt, filepath)
+                            finally:
+                                with self.lock:
+                                    if md5_hash in self.processing_events:
+                                        self.processing_events[md5_hash].set()
+                                        del self.processing_events[md5_hash]
+            
+            time.sleep(0.1)
+
+    def cleanup(self):
+        self.running = False
+        if os.path.exists(self.cache_dir):
+            shutil.rmtree(self.cache_dir)
+
+
+
+
 # 改行して配列で返す
 # 一文字づつ文字幅を確認する必要がある。(他にやり方無いのか。。。エグい)
 def getMultiLine(srcLine, w):
@@ -176,31 +336,43 @@ def getMultiLine(srcLine, w):
     return lines
 
 def saycommand(self, tx, pitch):
-    say = ['say', self.rw.replace(tx)]
-    if self.opt.voice:
-        say += ['-v',  self.opt.voice]
-    cmd = ['play', '-q', TMP_FILE, 'tempo', '-s', str(self.opt.rate), 'pitch', str(pitch)]
-
-    call(say + ['-o', TMP_FILE]) # これが終わらないと読めないので同期処理
-
+    # マネージャーから音声ファイルのパスを取得（無ければ同期生成される）
+    audio_file = self.cache_mgr.get_audio_path_sync(tx)
+    cmd = ['play', '-q', audio_file, 'tempo', '-s', str(self.opt.rate), 'pitch', str(pitch)]
+    
     return Popen(cmd, stdout=DEVNULL, stderr=STDOUT);
 
 class FadoshTUI():
     def __init__(self, opt):
-        self.st = '.'
+        self.st = '■'
         self.lines = loadLines(opt.file);
         self.hist  = History(f2md5(opt.file), len(self.lines))
         self.opt   = opt
         self.rw = ReplaceWord()
+        # ★ キャッシュマネージャーの初期化
+        cache_base = os.path.join(tempfile.gettempdir(), 'fadosh_catch')
+        if not os.path.exists(cache_base): os.mkdir(cache_base)
+        self.cache_mgr = AudioCacheManager(cache_base, self.opt.voice, self.rw)
+        # 初期コンテキストセット
+        self.cache_mgr.set_context(self.hist.get(self.opt), self.lines)
 
     def cursesInit(self):
         use_default_colors()
         init_pair(0, -1, -1)
         for i in range(16):
             init_pair(i, i, -1)
-        init_pair(101, 57, 255)
-        init_pair(102, 245, 255)
-        init_pair(120, 198, -1)
+        init_pair(COLOR_PRIMARY,    236, 33)
+        init_pair(COLOR_PRIMARY2,   33,  -1)
+        init_pair(COLOR_SECONDARY,  235, 248)
+        init_pair(COLOR_DEFAULT,    -1,  -1)
+        init_pair(COLOR_DEFAULT_HI, -1,  236)
+        init_pair(COLOR_SERIF1,     39,  -1)
+        init_pair(COLOR_SERIF1_HI,  39,  236)
+        init_pair(COLOR_SERIF2,     123, -1)
+        init_pair(COLOR_SERIF2_HI,  123, 236)
+        init_pair(COLOR_KAKKO1,     5,   -1)
+        init_pair(COLOR_KAKKO1_HI,  5,   236)
+        # init_pair(120, 198, -1)
         curs_set(False) #カーソル非表示
 
     def getCmd(self):
@@ -267,7 +439,7 @@ class FadoshTUI():
 
     def playLoop(self):
         """ 読み上げが終わったら次の行を読む。そんなループ """
-        self.st = '>'
+        self.st = '▶'
         self.scr.nodelay(True)
         while self.index < len(self.lines) and\
               type(self.lines[self.index]) == str:
@@ -284,7 +456,7 @@ class FadoshTUI():
             self.moveidx(+1)
         self.scr.nodelay(False)
         play('close.wav')
-        self.st = '.'
+        self.st = '■'
 
     def wcharOffsetTrim(self, text, offset):
         real = 0
@@ -330,7 +502,7 @@ class FadoshTUI():
         ratio = (self.index + (ratio * h)) / len(self.lines)# 画面の高さ考慮
         # プログレスバー。比率を画面幅にマッピング
         offset = self.wcharOffsetTrim(status, min(int(w * ratio), w))
-        self.stline.chgat(0, 0, offset, color_pair(102))
+        self.stline.chgat(0, 0, offset, color_pair(COLOR_PRIMARY))
         self.stline.refresh()
 
     def playSerifParse(self):
@@ -390,19 +562,21 @@ class FadoshTUI():
         for y in range(ly - 1):
             se, current = buf[y]
             self.lline.addstr(y, 0, ' ' * lx)
-            # ゴミが残るので全行に行う。現在選択を示すマーカー
-            self.scr.addstr(y, 0, ' ',
-                            (A_REVERSE|color_pair(101) if current else 0))
             self.lline.move(y, 0)
 
             for seri in se:
-                self.lline.addstr(seri.txt, color_pair(seri.color) | current)
+                if current:
+                    self.lline.addstr(seri.txt, color_pair(seri.color_hi) | current)
+                else:
+                    self.lline.addstr(seri.txt, color_pair(seri.color))
 
         self.lline.refresh()
 
     # テキストの範囲に収まるようindexを相対移動
     def moveidx(self, n):
         self.index = max(0, min(len(self.lines) - 1, self.index + n))
+        # ★ Workerに現在地を通知
+        self.cache_mgr.set_context(self.index, self.lines)
 
     # 範囲を考慮して、n行に絶対移動
     def jumpidx(self, n):
@@ -462,7 +636,7 @@ class FadoshTUI():
 
         self.lline = screen.subwin(0, 2)
         self.stline = screen.subwin(h-2, 0)
-        self.stline.bkgdset(' ', color_pair(101) | A_REVERSE)
+        self.stline.bkgdset(' ', color_pair(COLOR_SECONDARY) | A_REVERSE)
 
         self.jumpidx(self.hist.get(self.opt))
         self.render()
@@ -470,9 +644,13 @@ class FadoshTUI():
         if self.opt.auto:
             ungetch("\n")
 
-        # キー入力に応じて動くメインループ
-        while self.mainLoop():
-            None
+        try:
+            # キー入力に応じて動くメインループ
+            while self.mainLoop():
+                None
+        finally:
+            # ★ 終了時にキャッシュを爆破する
+            self.cache_mgr.cleanup()
 
         return 0
 
