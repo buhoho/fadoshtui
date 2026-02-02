@@ -383,26 +383,42 @@ class AudioCacheManager:
 
 
 
+def char_width(c):
+    """
+    文字の端末表示幅を返す（1 or 2）
+
+    注意:
+    - 制御文字（幅0）、結合文字（幅0）は考慮していない
+    - このアプリは日本語小説リーダーであり、制御文字・結合文字の出現は稀
+    - 出現した場合は幅1として処理（表示がずれる可能性あり）
+    """
+    ea = unicodedata.east_asian_width(c)
+    if ea in ('F', 'W'):  # Fullwidth, Wide
+        return 2
+    elif ea == 'A':  # Ambiguous
+        # 日本語端末（Terminal.app, iTerm2）では2幅が一般的
+        return 2
+    else:  # 'Na', 'H', 'N' (Narrow, Halfwidth, Neutral)
+        return 1
+
+
 # 改行して配列で返す
-# 一文字づつ文字幅を確認する必要がある。(他にやり方無いのか。。。エグい)
 def getMultiLine(srcLine, w):
-    if srcLine == None:
+    if srcLine is None:
         return []
-    if (w % 2 != 0):
-        w -= 1 # 全角文字を考慮して偶数列に丸めて画面の幅に余裕をもたせる
+    if w % 2 != 0:
+        w -= 1  # 全角文字を考慮して偶数列に丸めて画面の幅に余裕をもたせる
     lines = []
     oneLine = ""
     n = 0
-    # ユニコードにしないとバイトずつの操作になる。。
     for c in srcLine:
-        n += min(2, len(c.encode(CODE)))
-        if n < w:
-            oneLine += c
-            continue
-        # つまり行端に到達した or 一文が終了した
-        lines.append(oneLine + c)
-        oneLine = ""
-        n = 0
+        cw = char_width(c)
+        if n + cw > w:  # 追加したらはみ出す場合、先に改行
+            lines.append(oneLine)
+            oneLine = ""
+            n = 0
+        oneLine += c
+        n += cw
     lines.append(oneLine)
     return lines
 
@@ -536,6 +552,7 @@ class FadoshTUI():
                         return False
 
                 self.stLineRender()
+                doupdate()  # stLineRender単独呼び出し時は明示的に反映
                 napms(40)
 
         return True
@@ -565,16 +582,18 @@ class FadoshTUI():
         real = 0
         wbreak = True
         for c in text:
-            real += min(2, len(c.encode(CODE)))
+            real += char_width(c)  # getMultiLineと統一
             if real == offset:
                 wbreak = False
             if real > offset:
-                return max(0, offset + ( -1 if wbreak else 0))
+                return max(0, offset + (-1 if wbreak else 0))
         return offset
 
     def render(self):
         self.stLineRender()
         self._render()
+        # 物理画面への反映を1回にまとめる
+        doupdate()
 
     def stLineRender(self):
         """
@@ -606,7 +625,7 @@ class FadoshTUI():
         # プログレスバー。比率を画面幅にマッピング
         offset = self.wcharOffsetTrim(status, min(int(w * ratio), w))
         self.stline.chgat(0, 0, offset, color_pair(COLOR_PRIMARY))
-        self.stline.refresh()
+        self.stline.noutrefresh()  # doupdate()で一括反映
 
     def playSerifParse(self):
         """
@@ -681,7 +700,7 @@ class FadoshTUI():
                 else:
                     self.lline.addstr(seri.txt, color_pair(seri.color))
 
-        self.lline.refresh()
+        self.lline.noutrefresh()  # doupdate()で一括反映
 
     # テキストの範囲に収まるようindexを相対移動
     def moveidx(self, n):
@@ -733,6 +752,7 @@ class FadoshTUI():
         if c and c in " \n":
             self.playLoop();
             self.stLineRender()
+            doupdate()  # stLineRender単独呼び出し時は明示的に反映
 
         if self.opt.auto and self.index ==len(self.lines) -1:
             return False
