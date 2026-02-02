@@ -12,6 +12,7 @@ import os, os.path, time, sys, importlib
 import shutil, threading
 import locale, unicodedata
 import re, pickle, argparse, csv, tempfile
+import fcntl
 
 from curses import *
 from hashlib import md5
@@ -70,24 +71,66 @@ def loadAbs(filename, flg, func):
 # 最後に読んでいた位置をファイルに保存する
 class History():
     pkl = CONF + '/history.pkl'
+    lock_file = CONF + '/history.lock'
+
     def __init__(self, hash, length):
         self.hash = hash
-        # pickle に引き渡すファイルはリードバイナリじゃないと駄目らしい
-        self.load = lambda: loadAbs(self.pkl, 'rb', pickle.load)
-        self.last = None;
+        self.last = None
+
     def get(self, ag):
-        last = (self.load() or {}).get(self.hash, 0)
+        """ロック付きで履歴を読み込む"""
+        try:
+            with open(self.lock_file, 'a+') as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+                try:
+                    with open(self.pkl, 'rb') as f:
+                        hist = pickle.load(f)
+                    last = hist.get(self.hash, 0)
+                except (IOError, EOFError, pickle.UnpicklingError):
+                    last = 0
+                finally:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        except IOError:
+            last = 0
         return ag.index - 1 if ag.index else last
+
     def set(self, idx):
-        self.last and self.last.cancel()
-        self.last = threading.Timer(0.2, lambda : self._set(idx))
+        if self.last:
+            self.last.cancel()
+        self.last = threading.Timer(0.2, lambda: self._set(idx))
         self.last.start()
+
     def _set(self, idx):
-        hist = self.load() or {}
-        hist[self.hash] = idx
-        with open(self.pkl, 'wb') as f:
-             pickle.dump(hist, f)
+        """ロック付きでアトミックに履歴を更新"""
+        try:
+            with open(self.lock_file, 'a+') as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                try:
+                    # 同じロック内で read → update → write
+                    hist = {}
+                    try:
+                        with open(self.pkl, 'rb') as f:
+                            hist = pickle.load(f)
+                    except (IOError, EOFError, pickle.UnpicklingError):
+                        pass
+
+                    hist[self.hash] = idx
+
+                    # 一時ファイル経由でアトミック書き込み
+                    tmp_path = self.pkl + f'.tmp.{os.getpid()}'
+                    with open(tmp_path, 'wb') as f:
+                        pickle.dump(hist, f)
+                    os.rename(tmp_path, self.pkl)
+                finally:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        except IOError:
+            pass
         return idx
+
+    def cancel_timer(self):
+        """終了時にタイマーをキャンセル"""
+        if self.last:
+            self.last.cancel()
 
 # TSVをロードして、その設定通りに読み上げ置換する
 # 置換の適用はファイルの上から順番に行う
@@ -100,7 +143,7 @@ class ReplaceWord():
         self.words += [[re.compile("[ -]"), ""],
                        [re.compile("-+"), ""],
                        [re.compile("ー。"), "ー"],
-                       [re.compile("ー([？?！!」])"), "\1"]] 
+                       [re.compile("ー([？?！!」])"), r"\1"]] 
     # 読み替え置換
     def replace(self, txt):
         for (ptn, replace) in self.words or []:
@@ -115,8 +158,9 @@ def f2md5(filename):
 
 def loadLines(filename):
     lines = []
-    for t in open(filename, encoding="UTF-8"):
-        lines.append(t.strip("\n"));
+    with open(filename, encoding="UTF-8") as f:
+        for t in f:
+            lines.append(t.strip("\n"))
     lines.append("")
     return lines
 
@@ -169,28 +213,31 @@ class SerifParser():
 
 class AudioCacheManager:
     def __init__(self, output_dir, voice_opt, rw_instance):
-        self.cache_dir = os.path.join(output_dir, 'cache')
+        self.cache_dir = output_dir  # 既にインスタンス固有
         self.voice = voice_opt
         self.rw = rw_instance
-        self.current_index = 0
-        self.lines = []
+        self._current_index = 0
+        self._lines = []
         self.running = True
 
         # 排他制御用: { md5_hash: threading.Event }
         # 「今、誰かがこのハッシュを作っているか」を管理する
         self.processing_events = {}
-        self.lock = threading.Lock() 
-        
-        if os.path.exists(self.cache_dir):
-            shutil.rmtree(self.cache_dir)
-        os.makedirs(self.cache_dir, exist_ok=True)
+        self.lock = threading.Lock()
+        self.context_lock = threading.Lock()  # コンテキスト用ロック
 
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
 
     def set_context(self, index, lines):
-        self.current_index = index
-        self.lines = lines
+        with self.context_lock:
+            self._current_index = index
+            self._lines = lines
+
+    def _get_context(self):
+        """スレッドセーフにコンテキストを取得"""
+        with self.context_lock:
+            return self._current_index, self._lines
 
     def get_audio_path_sync(self, text):
         """
@@ -221,9 +268,12 @@ class AudioCacheManager:
                 owner = True
 
         if not owner:
-            # 作成中なら、完了するまでここでブロックして待つ
-            event.wait()
-            return filepath
+            # 作成中なら、タイムアウト付きで完了を待つ
+            if event.wait(timeout=10.0):
+                if os.path.exists(filepath):
+                    return filepath
+            # タイムアウトまたはファイルなし → 再生成を試みる
+            return self._fallback_generate(text, filepath)
 
         # 3. 自分が担当者の場合のみ、生成処理を実行
         try:
@@ -235,8 +285,19 @@ class AudioCacheManager:
             with self.lock:
                 if md5_hash in self.processing_events:
                     del self.processing_events[md5_hash]
-        
+
         return filepath
+
+    def _fallback_generate(self, text, filepath):
+        """タイムアウト時のフォールバック生成（例外を安全に処理）"""
+        if os.path.exists(filepath):
+            return filepath
+        try:
+            self._generate_file(text, filepath)
+            return filepath if os.path.exists(filepath) else None
+        except Exception:
+            # 生成失敗時は None を返す（呼び出し元で処理）
+            return None
 
     def _generate_file(self, text, filepath):
         """ ファイル生成の実体（Manager内部でのみ使用） """
@@ -258,25 +319,31 @@ class AudioCacheManager:
         """ バックグラウンド先読みスレッド """
         LOOK_BACK = 5
         LOOK_AHEAD = 5
-        
+
         while self.running:
-            if not self.lines:
+            # スレッドセーフにコンテキストを取得
+            curr, lines = self._get_context()
+
+            if not lines:
                 time.sleep(0.5)
                 continue
 
-            curr = self.current_index
             start_idx = max(0, curr - LOOK_BACK)
-            end_idx = min(len(self.lines), curr + LOOK_AHEAD)
+            end_idx = min(len(lines), curr + LOOK_AHEAD)
             
             from fadoshtui import SerifParser 
             parser = SerifParser()
 
             for idx in range(start_idx, end_idx):
-                if idx >= len(self.lines): break
-                
-                line = self.lines[idx]
-                if type(line) != str: continue
-                
+                if not self.running:
+                    break
+                if idx >= len(lines):
+                    break
+
+                line = lines[idx]
+                if not isinstance(line, str):
+                    continue
+
                 serif_list = parser.parse(line)
                 
                 # ★修正: idx > curr を idx >= curr に変更
@@ -306,8 +373,12 @@ class AudioCacheManager:
 
     def cleanup(self):
         self.running = False
-        if os.path.exists(self.cache_dir):
-            shutil.rmtree(self.cache_dir)
+        self.thread.join(timeout=2.0)  # ワーカーの終了を待つ
+        try:
+            if os.path.exists(self.cache_dir):
+                shutil.rmtree(self.cache_dir)
+        except OSError:
+            pass
 
 
 
@@ -338,23 +409,48 @@ def getMultiLine(srcLine, w):
 def saycommand(self, tx, pitch):
     # マネージャーから音声ファイルのパスを取得（無ければ同期生成される）
     audio_file = self.cache_mgr.get_audio_path_sync(tx)
+    if audio_file is None or not os.path.exists(audio_file):
+        return None
     cmd = ['play', '-q', audio_file, 'tempo', '-s', str(self.opt.rate), 'pitch', str(pitch)]
-    
-    return Popen(cmd, stdout=DEVNULL, stderr=STDOUT);
+    try:
+        return Popen(cmd, stdout=DEVNULL, stderr=STDOUT)
+    except (FileNotFoundError, OSError):
+        return None
 
 class FadoshTUI():
     def __init__(self, opt):
         self.st = '■'
-        self.lines = loadLines(opt.file);
+        self.lines = loadLines(opt.file)
         self.hist  = History(f2md5(opt.file), len(self.lines))
         self.opt   = opt
         self.rw = ReplaceWord()
-        # ★ キャッシュマネージャーの初期化
-        cache_base = os.path.join(tempfile.gettempdir(), 'fadosh_catch')
-        if not os.path.exists(cache_base): os.mkdir(cache_base)
+        # ★ キャッシュマネージャーの初期化（インスタンス固有ディレクトリ）
+        cache_root = os.path.join(tempfile.gettempdir(), 'fadosh_catch')
+        os.makedirs(cache_root, exist_ok=True)
+        self._cleanup_old_caches(cache_root, max_age_hours=1)
+        # インスタンス固有のキャッシュディレクトリ（PID + タイムスタンプ）
+        cache_base = os.path.join(cache_root, f'{os.getpid()}_{int(time.time())}')
+        os.makedirs(cache_base, exist_ok=True)
         self.cache_mgr = AudioCacheManager(cache_base, self.opt.voice, self.rw)
         # 初期コンテキストセット
         self.cache_mgr.set_context(self.hist.get(self.opt), self.lines)
+
+    def _cleanup_old_caches(self, cache_root, max_age_hours=1):
+        """起動時に古いキャッシュディレクトリを掃除"""
+        now = time.time()
+        max_age_sec = max_age_hours * 3600
+        try:
+            for entry in os.listdir(cache_root):
+                path = os.path.join(cache_root, entry)
+                if os.path.isdir(path):
+                    try:
+                        mtime = os.path.getmtime(path)
+                        if now - mtime > max_age_sec:
+                            shutil.rmtree(path, ignore_errors=True)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
 
     def cursesInit(self):
         use_default_colors()
@@ -365,7 +461,7 @@ class FadoshTUI():
         init_pair(COLOR_PRIMARY2,   33, -1)
         init_pair(COLOR_SECONDARY,  235, 248)
         init_pair(COLOR_DEFAULT,    -1, -1)
-        init_pair(COLOR_DEFAULT_HI, -1, 236)
+        init_pair(COLOR_DEFAULT_HI, -1, 237)
         init_pair(COLOR_SERIF1,     39, -1)
         init_pair(COLOR_SERIF1_HI,  39, 236)
         init_pair(COLOR_SERIF2,     123, -1)
@@ -420,12 +516,19 @@ class FadoshTUI():
                     self.scr.refresh()
                     self.render()
                 if c and c in "[] q\n":
-                    proc and proc.poll() == None and proc.kill()
+                    if proc is not None and proc.poll() is None:
+                        try:
+                            proc.kill()
+                            proc.wait(timeout=1.0)  # ゾンビプロセス防止
+                        except (ProcessLookupError, OSError):
+                            pass
                     if c == '[':
-                        i = self.index -1
-                        while self.lines[i].strip() == "":
-                                i -= 1
-                        self.jumpidx(i-1)
+                        i = self.index - 1
+                        # 境界チェック追加
+                        while i >= 0 and self.lines[i].strip() == "":
+                            i -= 1
+                        if i >= 0:
+                            self.jumpidx(i - 1)
                         return True
                     if c == ']':
                         return True # 再生は続けたまま現在の読み上げキャンセル
@@ -510,12 +613,15 @@ class FadoshTUI():
         カレント行の手前の文章もパースして読み上げ位置のセリフ状態を正確に
         判定する。改行されたセリフを想定した処理
         """
-        sPerser = SerifParser();
-        before = 5 
-        se = None;
-        for idx in range(max(0, (self.index - before)), self.index + 1):
-            se = sPerser.parse(self.lines[idx])
-        return se
+        sPerser = SerifParser()
+        before = 5
+        se = []
+        start_idx = max(0, self.index - before)
+        end_idx = min(len(self.lines), self.index + 1)
+        for idx in range(start_idx, end_idx):
+            if isinstance(self.lines[idx], str):
+                se = sPerser.parse(self.lines[idx])
+        return se if se else []
 
     def refreshBuf(self, ly, lx):
         """
@@ -570,7 +676,7 @@ class FadoshTUI():
 
             for seri in se:
                 if current:
-                    self.scr.addstr(y, 0, ' ' * w, color_pair(seri.color_hi))
+                    # self.scr.addstr(y, 0, ' ' * w, color_pair(seri.color_hi))
                     self.lline.addstr(seri.txt, color_pair(seri.color_hi) | current)
                 else:
                     self.lline.addstr(seri.txt, color_pair(seri.color))
@@ -654,7 +760,8 @@ class FadoshTUI():
             while self.mainLoop():
                 None
         finally:
-            # ★ 終了時にキャッシュを爆破する
+            # ★ 終了時のクリーンアップ
+            self.hist.cancel_timer()
             self.cache_mgr.cleanup()
 
         return 0
