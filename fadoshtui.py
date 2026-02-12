@@ -331,7 +331,6 @@ class AudioCacheManager:
             start_idx = max(0, curr - LOOK_BACK)
             end_idx = min(len(lines), curr + LOOK_AHEAD)
             
-            from fadoshtui import SerifParser 
             parser = SerifParser()
 
             for idx in range(start_idx, end_idx):
