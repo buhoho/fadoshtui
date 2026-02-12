@@ -9,16 +9,13 @@ sayコマンドは音声読み上げコマンドです。FadoshTUI はセリフ�
 高速で読み上げたりといった使い勝手を向上します。
 
 
-## Demo
-
-![FadoshTUI on terminal movie](http://i.imgur.com/b9f7a8y.gif)
-
-
 ## Features
 
-- UTF-8 (partial) Support
-- Graphical Text UI
-- Very fast or slow speaking, by useing sox. (range to 0.1x - 9.0x)
+- UTF-8 Support
+- Graphical Text UI (dark theme)
+- Very fast or slow speaking, by using sox. (range to 0.1x - 9.0x)
+- Audio pre-caching for smooth playback
+- Multiple instance support (file locking)
 
 ## Requirement
 
