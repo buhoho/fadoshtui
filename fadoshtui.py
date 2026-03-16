@@ -12,7 +12,7 @@ import os, os.path, time, sys, importlib
 import shutil, threading
 import locale, unicodedata
 import re, pickle, argparse, csv, tempfile
-import fcntl
+import fcntl, signal, atexit, subprocess
 
 from curses import *
 from hashlib import md5
@@ -219,10 +219,13 @@ class AudioCacheManager:
         self._current_index = 0
         self._lines = []
         self.running = True
+        self._playback_active = False
+        self._wake_event = threading.Event()
 
         # 排他制御用: { md5_hash: threading.Event }
         # 「今、誰かがこのハッシュを作っているか」を管理する
         self.processing_events = {}
+        self._active_say_procs = set()
         self.lock = threading.Lock()
         self.context_lock = threading.Lock()  # コンテキスト用ロック
 
@@ -233,6 +236,12 @@ class AudioCacheManager:
         with self.context_lock:
             self._current_index = index
             self._lines = lines
+        self._wake_event.set()
+
+    def set_playback_active(self, active):
+        self._playback_active = active
+        if active:
+            self._wake_event.set()
 
     def _get_context(self):
         """スレッドセーフにコンテキストを取得"""
@@ -301,15 +310,36 @@ class AudioCacheManager:
 
     def _generate_file(self, text, filepath):
         """ ファイル生成の実体（Manager内部でのみ使用） """
-        part_path = filepath + '.part' 
+        if not self.running:
+            return
+        part_path = filepath + '.part'
         speak_text = self.rw.replace(text)
-        
+
         cmd = ['say', speak_text, '-o', part_path]
         if self.voice:
             cmd += ['-v', self.voice]
-            
-        ret = call(cmd, stdout=DEVNULL, stderr=STDOUT)
-        
+
+        proc = Popen(cmd, stdout=DEVNULL, stderr=STDOUT)
+
+        with self.lock:
+            if not self.running:
+                proc.kill()
+                proc.wait()
+                if os.path.exists(part_path): os.remove(part_path)
+                return
+            self._active_say_procs.add(proc)
+
+        try:
+            ret = proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            if os.path.exists(part_path): os.remove(part_path)
+            return
+        finally:
+            with self.lock:
+                self._active_say_procs.discard(proc)
+
         if ret == 0:
             os.rename(part_path, filepath)
         else:
@@ -321,17 +351,24 @@ class AudioCacheManager:
         LOOK_AHEAD = 5
 
         while self.running:
+            if not self._playback_active:
+                self._wake_event.wait(timeout=5.0)
+                self._wake_event.clear()
+                continue
+
             # スレッドセーフにコンテキストを取得
             curr, lines = self._get_context()
 
             if not lines:
-                time.sleep(0.5)
+                self._wake_event.wait(timeout=1.0)
+                self._wake_event.clear()
                 continue
 
             start_idx = max(0, curr - LOOK_BACK)
             end_idx = min(len(lines), curr + LOOK_AHEAD)
-            
+
             parser = SerifParser()
+            generated_count = 0
 
             for idx in range(start_idx, end_idx):
                 if not self.running:
@@ -344,35 +381,45 @@ class AudioCacheManager:
                     continue
 
                 serif_list = parser.parse(line)
-                
-                # ★修正: idx > curr を idx >= curr に変更
-                # これで「現在行」も生成対象になり、再生中の行の「次のパーツ」が裏で作られます
+
                 if idx >= curr:
                     for serif in serif_list:
                         md5_hash = md5(serif.txt.encode('utf-8')).hexdigest()
                         filepath = os.path.join(self.cache_dir, md5_hash + '.aiff')
-                        
+
                         # ファイルがなく、かつ作成中でもない時だけ予約を入れる
                         should_generate = False
                         with self.lock:
                             if not os.path.exists(filepath) and md5_hash not in self.processing_events:
                                 self.processing_events[md5_hash] = threading.Event()
                                 should_generate = True
-                        
+
                         if should_generate:
                             try:
                                 self._generate_file(serif.txt, filepath)
+                                generated_count += 1
                             finally:
                                 with self.lock:
                                     if md5_hash in self.processing_events:
                                         self.processing_events[md5_hash].set()
                                         del self.processing_events[md5_hash]
-            
-            time.sleep(0.1)
+
+            if generated_count == 0:
+                self._wake_event.wait(timeout=1.0)
+                self._wake_event.clear()
+            else:
+                time.sleep(0.1)
 
     def cleanup(self):
         self.running = False
-        self.thread.join(timeout=2.0)  # ワーカーの終了を待つ
+        self._wake_event.set()
+        with self.lock:
+            for p in list(self._active_say_procs):
+                try:
+                    p.kill()
+                except (ProcessLookupError, OSError):
+                    pass
+        self.thread.join(timeout=3.0)
         try:
             if os.path.exists(self.cache_dir):
                 shutil.rmtree(self.cache_dir)
@@ -559,6 +606,7 @@ class FadoshTUI():
     def playLoop(self):
         """ 読み上げが終わったら次の行を読む。そんなループ """
         self.st = '▶'
+        self.cache_mgr.set_playback_active(True)
         self.scr.nodelay(True)
         while self.index < len(self.lines) and\
               type(self.lines[self.index]) == str:
@@ -573,6 +621,7 @@ class FadoshTUI():
             if self.index >= len(self.lines) -1:
                 break
             self.moveidx(+1)
+        self.cache_mgr.set_playback_active(False)
         self.scr.nodelay(False)
         play('close.wav')
         self.st = '■'
@@ -758,6 +807,11 @@ class FadoshTUI():
 
         return True #ループ継続
 
+    def _cleanup_all(self):
+        """全リソースの解放。複数回呼ばれても安全（べき等）"""
+        self.hist.cancel_timer()
+        self.cache_mgr.cleanup()
+
     def main(self, screen):
         self.cursesInit()
         self.scr = screen
@@ -767,6 +821,12 @@ class FadoshTUI():
         self.lline = screen.subwin(0, 2)
         self.stline = screen.subwin(h-2, 0)
         self.stline.bkgdset(' ', color_pair(COLOR_SECONDARY) | A_REVERSE)
+
+        def _signal_handler(signum, frame):
+            self._cleanup_all()
+            sys.exit(0)
+        signal.signal(signal.SIGHUP, _signal_handler)
+        atexit.register(self._cleanup_all)
 
         self.jumpidx(self.hist.get(self.opt))
         self.render()
@@ -779,9 +839,7 @@ class FadoshTUI():
             while self.mainLoop():
                 None
         finally:
-            # ★ 終了時のクリーンアップ
-            self.hist.cancel_timer()
-            self.cache_mgr.cleanup()
+            self._cleanup_all()
 
         return 0
 
